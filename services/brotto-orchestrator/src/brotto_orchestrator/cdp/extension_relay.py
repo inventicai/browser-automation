@@ -89,12 +89,21 @@ class ExtensionCDPRelay:
         log.info("[%s] get_targets → %d targets", self._sid, len(targets))
         return targets
 
+    async def _drain_pending_obs(self) -> None:
+        try:
+            obs = self._obs_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        self._cached_obs = obs
+
     async def get_current_url(self) -> str:
+        await self._drain_pending_obs()
         url = (self._cached_obs or {}).get("url", "")
         log.debug("[%s] get_current_url → %s", self._sid, url)
         return url
 
     async def get_page_title(self) -> str:
+        await self._drain_pending_obs()
         title = (self._cached_obs or {}).get("title", "")
         log.debug("[%s] get_page_title → %r", self._sid, title)
         return title
