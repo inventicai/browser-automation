@@ -22,9 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "0.5.x"
+        uses: astral-sh/setup-uv@v6
 
       - name: Set up Python
         run: uv python install 3.12
@@ -55,6 +53,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # ponytail: build.mjs calls `rsvg-convert` to rasterize the SVG
+      # icon at 16/32/48/128 px. librsvg isn't on the GitHub runner by
+      # default — install it once per job. If the icon pipeline ever
+      # moves to a Node renderer (e.g. @resvg/resvg-js), drop this step.
+      - name: Install librsvg (rsvg-convert)
+        run: sudo apt-get update && sudo apt-get install -y librsvg2-bin
 
       - name: Set up Node
         uses: actions/setup-node@v4
