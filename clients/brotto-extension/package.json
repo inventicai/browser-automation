@@ -1,0 +1,28 @@
+{
+  "name": "@brotto/browser-extension",
+  "version": "1.0.0",
+  "description": "Brotto Browser Extension - Drives your real Chrome via the Brotto orchestrator",
+  "main": "src/background.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:tsc": "tsc --noEmit",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "brotto",
+    "browser-extension",
+    "chrome-extension",
+    "side-panel",
+    "browser-automation",
+    "model-agnostic"
+  ],
+  "author": "Inventic",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^20.11.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.3.3"
+  }
+}

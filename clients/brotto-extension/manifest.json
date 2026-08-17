@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Brotto",
+  "version": "1.0.0",
+  "description": "Drive your real browser with any AI model. Model-agnostic, open-source.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Brotto"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage",
+    "sidePanel",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "brotto-browser-extension@inventic.ch"
+    }
+  }
+}
