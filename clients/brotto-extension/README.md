@@ -36,13 +36,13 @@ The browser extension provides:
 
 ### For Internal Testers
 
-Pre-built signed artifacts are published to **GitHub Releases** whenever a version tag is pushed.
+Pre-built signed artifacts are hosted on **GitHub Pages** at [inventicai.github.io/browser-automation](https://inventicai.github.io/browser-automation/) — the install landing.
 
-- Visit [Releases](https://github.com/inventicai/browser-automation/releases) and download the latest `brotto.crx`.
-- Open `chrome://extensions/`, enable **Developer mode** (one-time, top-right), drag `brotto.crx` onto the page, confirm the install prompt.
+- Visit the URL above and click **Download Brotto for Chrome**.
+- Open `chrome://extensions/`, enable **Developer mode** (one-time, top-right), drag the downloaded `brotto.crx` onto the page, confirm the install prompt.
 - The Brotto toolbar icon appears; click it to open the side panel.
 
-Updates are manual today: re-download the latest `brotto.crx` from the Releases page and accept the install prompt again. Auto-update will come back when we add a hosting layer (see `docs/packaging/README.md`).
+Updates are automatic from this point on — Chrome polls `update.xml` (hosted on the same Pages site) and rolls in newer `brotto.crx` versions without any action from you.
 
 ### From Source (for contributors)
 

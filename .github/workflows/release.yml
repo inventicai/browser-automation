@@ -48,15 +48,28 @@ jobs:
         working-directory: clients/brotto-extension
         run: npm run build
 
-      - name: Release artifacts (CRX + Edge ZIP)
+      - name: Release artifacts (CRX + update.xml + Edge ZIP)
         working-directory: clients/brotto-extension
         run: npm run release:chrome
 
-      - name: GitHub Release
+      - name: Stage artifacts for GH Pages
+        run: |
+          mkdir -p install/release
+          cp clients/brotto-extension/dist/brotto.crx install/release/brotto.crx
+          cp clients/brotto-extension/dist/update.xml install/release/update.xml
+
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./install
+          force_orphan: true
+          enable_jekyll: false
+
+      - name: GitHub Release (Edge ZIP only)
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            clients/brotto-extension/dist/brotto.crx
             clients/brotto-extension/dist/brotto-edge.zip
           generate_release_notes: true
           tag_name: ${{ github.ref_name }}

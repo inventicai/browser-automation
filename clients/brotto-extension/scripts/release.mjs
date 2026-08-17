@@ -1,9 +1,8 @@
-// Build a signed CRX3 + Edge ZIP from the existing `dist/`.
+// Build a signed CRX3 + update.xml + Edge ZIP from the existing `dist/`.
 // Run after `npm run build` (or `node build.mjs`).
 //
-// `update.xml` is intentionally not produced — that lives behind a
-// hosting layer (CF Pages / GH Pages / similar). For now, GH Releases
-// is the distribution channel; testers re-download to update.
+// `update.xml` is consumed by Chrome's auto-updater when the manifest
+// declares `update_url`. CRX3 requires strict-monotonic version bumps.
 import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +15,10 @@ const distDir   = join(extDir, 'dist');
 const keyPath   = join(extDir, 'crx-signing.pem');
 const crxPath   = join(distDir, 'brotto.crx');
 const edgePath  = join(distDir, 'brotto-edge.zip');
+const xmlPath   = join(distDir, 'update.xml');
+// GH Pages hosts the artifacts at https://inventicai.github.io/browser-automation/
+// (configure Source = gh-pages branch in repo settings, one-time).
+const ghBase    = 'https://inventicai.github.io/browser-automation';
 
 if (!existsSync(distDir)) {
   console.error(`No ${distDir}/ found. Run \`npm run build\` first.`);
@@ -39,7 +42,17 @@ const version  = manifest.version;
 const crx = new Crx({ privateKey: pem });
 await crx.load(distDir);
 const crxBuffer = await crx.pack();
+const appId = crx.generateAppId(crx.publicKey);
 writeFileSync(crxPath, crxBuffer);
+
+const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+  <app appid="${appId}">
+    <updatecheck codebase="${ghBase}/release/brotto.crx" version="${version}" />
+  </app>
+</gupdate>
+`;
+writeFileSync(xmlPath, xml);
 
 // Edge Add-ons wants a plain ZIP of the unpacked dist/ (no CRX/XML/ZIP inside it).
 execSync(`zip -r brotto-edge.zip . -x "brotto.crx" "update.xml" "brotto-edge.zip"`,
@@ -48,4 +61,5 @@ execSync(`zip -r brotto-edge.zip . -x "brotto.crx" "update.xml" "brotto-edge.zip
 console.log('--- Release artifacts ---');
 console.log(`version : ${version}`);
 console.log(`crx     : ${crxPath}  (${statSync(crxPath).size} bytes)`);
+console.log(`xml     : ${xmlPath}`);
 console.log(`edge zip: ${edgePath}`);

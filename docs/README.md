@@ -22,7 +22,7 @@ Build the extension: `cd clients/brotto-extension && npm install && npm run buil
 
 ## Distribution
 
-Tagged releases publish a signed `brotto.crx` (and the Edge ZIP) as a GitHub Release. Internal testers download from there and drag into `chrome://extensions/`. See `docs/packaging/README.md` for the release flow and the one-time secrets setup.
+Tagged releases publish a signed `brotto.crx` + `update.xml` to **GitHub Pages** at [inventicai.github.io/browser-automation](https://inventicai.github.io/browser-automation/), plus the Edge ZIP as a GitHub Release artifact. The extension auto-updates via `update.xml` after install. See `docs/packaging/README.md` for the release flow and the one-time secrets setup.
 
 ## How it works
 

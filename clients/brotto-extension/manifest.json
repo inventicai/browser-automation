@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "update_url": "https://inventicai.github.io/browser-automation/release/update.xml",
   "name": "Brotto",
   "version": "1.0.1",
   "description": "Drive your real browser with any AI model. Model-agnostic, open-source.",
