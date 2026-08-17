@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Brand mark: Inventic mountain.
+       Same geometry as the header mark in sidepanel.html.
+       Renders to PNGs at 16/32/48/128 via build.mjs (rsvg-convert). -->
+  <path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/>
+  <path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/>
+</svg>

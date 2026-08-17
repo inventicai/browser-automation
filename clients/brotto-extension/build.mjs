@@ -1,5 +1,6 @@
 import * as esbuild from 'esbuild';
 import { copyFileSync, mkdirSync, existsSync, rmSync } from 'fs';
+import { execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,6 +16,17 @@ for (const name of ['sidepanel.html', 'sidepanel.js']) {
   copyFileSync(join(srcDir, name), join(distDir, name));
 }
 copyFileSync(join(__dirname, 'manifest.json'), join(distDir, 'manifest.json'));
+
+// Brand mark PNGs — single source is src/assets/icon.svg; rsvg-convert
+// renders the standard Chrome extension sizes (toolbar, install, store).
+// ponytail: requires `rsvg-convert` (librsvg) on the build host. Same
+// geometry as the inline mark in sidepanel.html — change once, rebuild.
+const iconSvg = join(srcDir, 'assets', 'icon.svg');
+const iconsDir = join(distDir, 'icons');
+mkdirSync(iconsDir, { recursive: true });
+for (const size of [16, 32, 48, 128]) {
+  execSync(`rsvg-convert -w ${size} -h ${size} ${iconSvg} -o ${join(iconsDir, `icon-${size}.png`)}`);
+}
 
 // Bundle background.ts
 console.log('Bundling background.ts...');

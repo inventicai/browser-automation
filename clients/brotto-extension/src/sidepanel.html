@@ -6,38 +6,60 @@
   <title>Brotto</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
-    /* ─── Design tokens ───────────────────────────────────────────────────── */
+    /* ─── Inventic Design Tokens (v1.0) ────────────────────────────────────
+       Brand: Inventic Blue #0052CC + Light Blue #6DB3D8
+       Type: Poppins (headings) + Inter (body)
+       See: docs/design-instructions.md
+    ─────────────────────────────────────────────────────────────────────── */
     :root {
-      --bg:            #FAF9F7;
-      --surface:       #FFFFFF;
-      --surface-2:     #F3F2EF;
-      --surface-3:     #ECEAE5;
-      --border:        #E4E2DC;
-      --border-soft:   #F0EEE9;
-      --text:          #1A1A1A;
-      --text-muted:    #6B6B6B;
-      --text-faint:    #AEAEAE;
-      --accent:        #D97706;
-      --accent-soft:   rgba(217,119,6,0.10);
-      --accent-hover:  #B45309;
-      --green:         #16A34A;
-      --green-soft:    rgba(22,163,74,0.10);
-      --red:           #DC2626;
-      --red-soft:      rgba(220,38,38,0.10);
-      --blue:          #2563EB;
-      --blue-soft:     rgba(37,99,235,0.10);
-      --amber:         #D97706;
-      --amber-soft:    rgba(217,119,6,0.10);
-      --radius-sm:     6px;
-      --radius:        14px;
-      --radius-lg:     18px;
-      --radius-xl:     24px;
-      --shadow-sm:     0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-      --shadow:        0 4px 12px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
-      --shadow-lg:     0 8px 24px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06);
-      --transition:    all 0.15s cubic-bezier(0.16,1,0.3,1);
+      /* Brand palette */
+      --brand-primary:       #0052CC;
+      --brand-primary-hover: #003D99;
+      --brand-primary-soft:  rgba(0, 82, 204, 0.10);
+      --brand-light:         #6DB3D8;
+      --brand-light-soft:    rgba(109, 179, 216, 0.16);
+      --brand-deep:          #003D99;
+      --brand-navy:          #001A4D;
+      --brand-white:         #FFFFFF;
+
+      /* Surfaces */
+      --bg:           #FFFFFF;
+      --surface:      #FFFFFF;
+      --surface-1:    #F8FAFC;
+      --surface-2:    #EEF3F8;
+      --surface-3:    #E2EAF2;
+
+      /* Borders */
+      --border:       #D9E2EC;
+      --border-soft:  #E8EEF4;
+
+      /* Text */
+      --text:         #1A1A1A;
+      --text-muted:   #5A6877;
+      --text-faint:   #94A2B0;
+
+      /* Status (kept distinct from brand) */
+      --green:        #16A34A;
+      --green-soft:   rgba(22, 163, 74, 0.10);
+      --red:          #DC2626;
+      --red-soft:     rgba(220, 38, 38, 0.10);
+      --amber:        #D97706;
+      --amber-soft:   rgba(217, 119, 6, 0.10);
+
+      /* Radii */
+      --radius-sm:    6px;
+      --radius:       10px;
+      --radius-lg:    14px;
+      --radius-xl:    20px;
+
+      /* Shadows */
+      --shadow-sm:    0 1px 2px rgba(0, 26, 77, 0.06);
+      --shadow:       0 4px 12px rgba(0, 26, 77, 0.08), 0 1px 3px rgba(0, 26, 77, 0.05);
+      --shadow-lg:    0 10px 28px rgba(0, 26, 77, 0.12), 0 2px 6px rgba(0, 26, 77, 0.06);
+
+      --transition:   all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -46,8 +68,9 @@
       height: 100%;
       background: var(--bg);
       color: var(--text);
-      font: 14px/1.5 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font: 14px/1.55 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
       -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
 
     body {
@@ -58,69 +81,48 @@
       overflow: hidden;
     }
 
-    /* ─── Hidden elements (kept for background.ts DOM-id compatibility) ─────── */
+    /* ─── Hidden elements (kept for background.ts DOM-id compatibility) ─── */
     #plannerUrl, #startingUrl, #connectBtn, #disconnectBtn,
     #refreshBtn, #statusPill, #brandDot, #stepCount, #timer,
     #connectionMeta { display: none !important; }
 
-    /* ─── Header ─────────────────────────────────────────────────────────── */
+    /* ─── Brand mark (Inventic mountain) ────────────────────────────────── */
+    .brand-mark {
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+      display: block;
+    }
+    .brand-mark--lg { width: 56px; height: 56px; }
+
+    /* ─── Header ────────────────────────────────────────────────────────── */
     header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 16px;
+      gap: 10px;
+      padding: 12px 16px;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
-      height: 52px;
+      height: 60px;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 7px;
-      font-weight: 600;
-      font-size: 15px;
-      color: var(--text);
+      gap: 8px;
       flex: 1;
+      min-width: 0;
     }
 
-    .brand-icon {
-      width: 26px;
-      height: 26px;
-      border-radius: 8px;
-      background: var(--accent);
-      display: grid;
-      place-items: center;
-      font-size: 13px;
+    .brand-name {
+      font-family: 'Poppins', sans-serif;
       font-weight: 700;
-      color: white;
-      flex-shrink: 0;
-      letter-spacing: -0.02em;
+      font-size: 17px;
+      color: var(--brand-primary);
+      letter-spacing: -0.01em;
+      line-height: 1;
     }
-
-    /* ponytail: model display (current model label, not a dropdown) */
-    #modelDisplay {
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-muted);
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 4px 12px;
-      letter-spacing: -0.005em;
-    }
-    #modelDisplay .dot {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #e53935;
-      margin-right: 6px;
-      vertical-align: middle;
-      transition: background 0.2s;
-    }
-    #modelDisplay.online .dot { background: #43a047; }
 
     /* Working spinner */
     #workingIndicator {
@@ -128,47 +130,58 @@
       align-items: center;
       gap: 6px;
       font-size: 12px;
+      font-weight: 500;
       color: var(--text-muted);
+      font-family: 'Inter', sans-serif;
     }
     #workingIndicator.active { display: flex; }
     .spinner {
       width: 14px;
       height: 14px;
       border: 2px solid var(--border);
-      border-top-color: var(--accent);
+      border-top-color: var(--brand-primary);
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
       flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ponytail: 2-column status bar — step counter + timer. Hidden
-       until the agent actually starts a task. */
+    /* ─── Status bar (steps + timer) ────────────────────────────────────── */
     #statusBar {
       display: none;
       grid-template-columns: 1fr 1fr;
       gap: 1px;
       background: var(--border);
       border-bottom: 1px solid var(--border);
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-family: 'Inter', sans-serif;
       font-size: 11px;
       color: var(--text-muted);
     }
     #statusBar.active { display: grid; }
     #statusBar .cell {
       background: var(--surface);
-      padding: 8px 14px;
+      padding: 9px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 6px;
     }
-    #statusBar .label { font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; font-size: 9px; color: var(--text-faint); }
-    #statusBar .value { font-weight: 600; color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
+    #statusBar .label {
+      font-family: 'Poppins', sans-serif;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-size: 10px;
+      color: var(--text-faint);
+    }
+    #statusBar .value {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
 
-    /* ponytail: tab-bar — shows every tab the agent opened/navigated/closed
-       during the current task. Persists across the chat stream so the user
-       always sees what else the agent touched without scrolling history. */
+    /* ─── Tab lifecycle bar ─────────────────────────────────────────────── */
     .tab-bar {
       border-top: 1px solid var(--border);
       background: var(--surface-1);
@@ -182,10 +195,11 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 6px 14px;
+      padding: 7px 14px;
+      font-family: 'Poppins', sans-serif;
       font-size: 10px;
       font-weight: 600;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.07em;
       text-transform: uppercase;
       color: var(--text-faint);
       background: var(--surface-2);
@@ -203,7 +217,7 @@
       padding: 0 4px;
       line-height: 1;
     }
-    .tab-bar-toggle:hover { color: var(--text); }
+    .tab-bar-toggle:hover { color: var(--brand-primary); }
     .tab-bar-body {
       overflow-y: auto;
       max-height: 168px;
@@ -223,6 +237,7 @@
     .tab-row:hover { background: var(--surface-2); }
     .tab-row:last-child { border-bottom: none; }
     .tab-row-badge {
+      font-family: 'Poppins', sans-serif;
       font-size: 9px;
       font-weight: 700;
       text-transform: uppercase;
@@ -234,9 +249,9 @@
       text-align: center;
       border: 1px solid var(--border);
     }
-    .tab-row-badge.opened { background: #eaf2ff; color: #2452b8; border-color: #c2d8f5; }
-    .tab-row-badge.closed { background: #fdecec; color: #a8332e; border-color: #f3c4c0; }
-    .tab-row-badge.focused { background: #e7f7ee; color: #1f7a3a; border-color: #b8e6c8; }
+    .tab-row-badge.opened  { background: var(--brand-primary-soft); color: var(--brand-primary); border-color: rgba(0, 82, 204, 0.20); }
+    .tab-row-badge.closed  { background: var(--red-soft); color: var(--red); border-color: rgba(220, 38, 38, 0.20); }
+    .tab-row-badge.focused { background: var(--green-soft); color: var(--green); border-color: rgba(22, 163, 74, 0.20); }
     .tab-row-info { min-width: 0; }
     .tab-row-title {
       font-weight: 600;
@@ -246,7 +261,7 @@
       color: var(--text);
     }
     .tab-row-url {
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
       font-size: 11px;
       color: var(--text-faint);
       white-space: nowrap;
@@ -260,53 +275,50 @@
       font-style: italic;
     }
 
-    /* ponytail: New Task button (shown after a task completes or errors,
-       lets the user reset and start fresh) */
+    /* ─── New Task button ──────────────────────────────────────────────── */
     .new-task-btn {
       align-self: center;
-      padding: 8px 16px;
+      padding: 9px 18px;
       border-radius: 999px;
-      border: 1px solid var(--accent);
+      border: 1px solid var(--brand-primary);
       background: transparent;
-      color: var(--accent);
-      font: inherit;
+      color: var(--brand-primary);
+      font-family: 'Inter', sans-serif;
       font-weight: 600;
       font-size: 13px;
       cursor: pointer;
       transition: var(--transition);
       margin: 16px auto;
       display: none;
+      letter-spacing: 0.01em;
     }
-    .new-task-btn:hover { background: var(--accent-soft); }
+    .new-task-btn:hover { background: var(--brand-primary-soft); transform: translateY(-1px); }
     .new-task-btn.visible { display: block; }
 
-    /* ponytail: safety-net Continue button shown on the login pause card.
-       Primary resume is automatic via webNavigation; this is the manual
-       override for SPAs and OAuth callback flows that don't trigger a
-       navigation event. */
+    /* ─── Login Continue button ───────────────────────────────────────── */
     .login-continue-btn {
       align-self: flex-start;
       margin: 6px 0 0 4px;
-      padding: 6px 14px;
+      padding: 7px 14px;
       border-radius: var(--radius-sm);
-      border: 1px solid var(--accent);
-      background: var(--accent);
+      border: 1px solid var(--brand-primary);
+      background: var(--brand-primary);
       color: #fff;
-      font: inherit;
+      font-family: 'Inter', sans-serif;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       transition: var(--transition);
     }
-    .login-continue-btn:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .login-continue-btn:hover:not(:disabled) { background: var(--brand-primary-hover); border-color: var(--brand-primary-hover); }
     .login-continue-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* Header actions */
+    /* ─── Header actions ──────────────────────────────────────────────── */
     .hdr-actions { display: flex; gap: 4px; align-items: center; }
 
     .btn-icon {
-      width: 30px;
-      height: 30px;
+      width: 32px;
+      height: 32px;
       padding: 0;
       display: grid;
       place-items: center;
@@ -318,22 +330,22 @@
       transition: var(--transition);
       flex-shrink: 0;
     }
-    .btn-icon:hover { background: var(--surface-2); color: var(--text); }
-    .btn-icon svg { width: 15px; height: 15px; pointer-events: none; }
+    .btn-icon:hover { background: var(--brand-primary-soft); color: var(--brand-primary); }
+    .btn-icon svg { width: 16px; height: 16px; pointer-events: none; }
 
     .btn-icon.btn-stop {
       color: var(--red);
-      width: 26px;
-      height: 26px;
+      width: 28px;
+      height: 28px;
     }
     .btn-icon.btn-stop:hover { background: var(--red-soft); }
 
-    /* ─── Settings overlay ───────────────────────────────────────────────── */
+    /* ─── Settings overlay ────────────────────────────────────────────── */
     #settingsOverlay {
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.35);
+      background: rgba(0, 26, 77, 0.40);
       z-index: 100;
       align-items: flex-start;
       justify-content: flex-end;
@@ -341,7 +353,7 @@
     #settingsOverlay.open { display: flex; }
 
     #settingsPanel {
-      width: 300px;
+      width: 320px;
       height: 100%;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -349,8 +361,9 @@
       display: flex;
       flex-direction: column;
       gap: 14px;
-      animation: slide-in-right 0.2s cubic-bezier(0.16,1,0.3,1);
+      animation: slide-in-right 0.2s cubic-bezier(0.16, 1, 0.3, 1);
       overflow-y: auto;
+      box-shadow: var(--shadow-lg);
     }
     @keyframes slide-in-right {
       from { transform: translateX(20px); opacity: 0; }
@@ -358,9 +371,10 @@
     }
 
     .settings-title {
+      font-family: 'Poppins', sans-serif;
       font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
+      font-weight: 700;
+      color: var(--brand-primary);
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
@@ -375,84 +389,92 @@
 
     .input {
       width: 100%;
-      padding: 8px 10px;
+      padding: 9px 11px;
       border-radius: var(--radius-sm);
       border: 1px solid var(--border);
-      background: var(--bg);
+      background: var(--surface-1);
       color: var(--text);
-      font: inherit;
+      font-family: 'Inter', sans-serif;
       font-size: 13px;
       outline: none;
       transition: var(--transition);
     }
     .input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
+      border-color: var(--brand-primary);
+      box-shadow: 0 0 0 3px var(--brand-primary-soft);
     }
 
     #settingsClose {
       align-self: flex-end;
-      width: 28px;
-      height: 28px;
+      width: 32px;
+      height: 32px;
       border-radius: var(--radius-sm);
       display: grid;
       place-items: center;
     }
 
-    /* ─── Chat / message area ────────────────────────────────────────────── */
+    /* ─── Chat messages ────────────────────────────────────────────────── */
     #messages {
       flex: 1;
       min-height: 0;
       overflow-y: auto;
-      padding: 16px 14px;
+      padding: 18px 16px;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 6px;
       scroll-behavior: smooth;
+      background: var(--bg);
     }
     #messages::-webkit-scrollbar { width: 4px; }
     #messages::-webkit-scrollbar-track { background: transparent; }
     #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    #messages::-webkit-scrollbar-thumb:hover { background: var(--brand-light); }
 
-    /* Empty state */
+    /* ─── Empty state ─────────────────────────────────────────────────── */
     .empty-state {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       height: 100%;
-      padding: 40px 20px;
+      padding: 40px 24px;
       color: var(--text-muted);
       text-align: center;
-      gap: 10px;
+      gap: 12px;
     }
-    .empty-logo {
-      font-family: 'Instrument Serif', Georgia, serif;
-      font-size: 36px;
-      color: var(--accent);
-      opacity: 0.7;
-      line-height: 1;
+    .empty-mark { line-height: 0; margin-top: 8px; }
+    .empty-title {
+      font-family: 'Poppins', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--brand-primary);
+      margin-top: 6px;
+      letter-spacing: -0.01em;
     }
-    .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-top: 4px; }
-    .empty-sub { font-size: 13px; color: var(--text-muted); max-width: 260px; line-height: 1.5; }
+    .empty-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      max-width: 280px;
+      line-height: 1.6;
+    }
 
-    /* ─── Message bubbles ────────────────────────────────────────────────── */
+    /* ─── Message bubbles ─────────────────────────────────────────────── */
     .message {
       display: flex;
       flex-direction: column;
-      max-width: 88%;
-      animation: msg-enter 0.22s cubic-bezier(0.16,1,0.3,1);
+      max-width: 92%;
+      animation: msg-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     }
     @keyframes msg-enter {
       from { opacity: 0; transform: translateY(8px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    .message.user  { align-self: flex-end; }
+    .message.user      { align-self: flex-end; }
     .message.assistant { align-self: flex-start; }
 
     .bubble {
-      padding: 10px 14px;
+      padding: 11px 14px;
       border-radius: var(--radius-lg);
       font-size: 14px;
       line-height: 1.55;
@@ -460,21 +482,22 @@
     }
 
     .message.user .bubble {
-      background: var(--surface-3);
-      color: var(--text);
+      background: var(--brand-primary);
+      color: #fff;
       border-bottom-right-radius: var(--radius-sm);
+      box-shadow: var(--shadow-sm);
     }
 
     .message.assistant .bubble {
       background: var(--surface);
       color: var(--text);
       box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border-soft);
       border-bottom-left-radius: var(--radius-sm);
     }
 
-    /* ponytail: step bubble — reasoning title + a small 'details' toggle that
-       reveals the raw tool call (action type + result). Default collapsed. */
-    .step-bubble { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; }
+    /* ─── Step bubble (with collapsible details) ──────────────────────── */
+    .step-bubble { display: flex; flex-direction: column; gap: 4px; padding: 11px 14px; }
     .step-head { font-size: 14px; line-height: 1.45; }
     .step-details { display: flex; flex-direction: column; gap: 4px; }
     .step-details-toggle {
@@ -482,95 +505,92 @@
       border: 1px solid var(--border);
       background: var(--surface-2);
       color: var(--text-muted);
-      font: inherit;
+      font-family: 'Inter', sans-serif;
       font-size: 11px;
       font-weight: 600;
       letter-spacing: 0.04em;
-      padding: 2px 8px;
+      padding: 3px 9px;
       border-radius: 999px;
       cursor: pointer;
+      transition: var(--transition);
     }
-    .step-details-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+    .step-details-toggle:hover { color: var(--brand-primary); border-color: var(--brand-primary); }
     .step-details-body {
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
       font-size: 11px;
       color: var(--text-muted);
       background: var(--surface-2);
-      padding: 6px 10px;
+      padding: 7px 10px;
       border-radius: 6px;
       border: 1px solid var(--border-soft);
       white-space: pre-wrap;
       overflow-x: auto;
     }
 
-    /* Assistant name */
     .msg-meta {
       display: flex;
       align-items: center;
       gap: 6px;
-      margin-bottom: 3px;
+      margin-bottom: 4px;
       padding: 0 4px;
     }
-    .msg-meta.assistant-meta { }
     .msg-name {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
-      letter-spacing: 0.01em;
+      font-family: 'Poppins', sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--brand-primary);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
 
-    /* System / inline log messages */
-    .message.system {
-      align-self: center;
-      max-width: 95%;
-    }
+    /* ─── System / error / done messages ──────────────────────────────── */
+    .message.system { align-self: center; max-width: 95%; }
     .message.system .bubble {
       background: transparent;
       color: var(--text-faint);
       font-size: 12px;
       font-style: italic;
-      padding: 3px 8px;
+      padding: 4px 8px;
       box-shadow: none;
       text-align: center;
     }
 
-    /* Done message */
     .message.done { }
     .message.done .bubble {
       background: var(--green-soft);
       color: var(--green);
-      border: 1px solid rgba(22,163,74,0.15);
+      border: 1px solid rgba(22, 163, 74, 0.18);
       border-radius: var(--radius);
       padding: 12px 16px;
     }
     .done-header {
       display: flex;
       align-items: center;
-      gap: 7px;
-      font-weight: 600;
+      gap: 8px;
+      font-family: 'Poppins', sans-serif;
+      font-weight: 700;
       font-size: 13px;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
     }
     .done-icon { font-size: 16px; }
-    .done-summary { font-size: 13px; opacity: 0.85; }
+    .done-summary { font-size: 13px; opacity: 0.95; }
 
-    /* Error message */
     .message.error .bubble {
       background: var(--red-soft);
       color: var(--red);
-      border: 1px solid rgba(220,38,38,0.15);
+      border: 1px solid rgba(220, 38, 38, 0.18);
     }
 
-    /* ─── Plan preview card ─────────────────────────────────────────────── */
+    /* ─── Plan preview card ───────────────────────────────────────────── */
     .plan-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow);
       padding: 14px 16px;
-      max-width: 88%;
+      max-width: 92%;
       align-self: flex-start;
-      animation: msg-enter 0.22s cubic-bezier(0.16,1,0.3,1);
+      animation: msg-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .plan-header {
       display: flex;
@@ -579,14 +599,15 @@
       margin-bottom: 10px;
     }
     .plan-badge {
-      background: var(--accent-soft);
-      color: var(--accent);
+      background: var(--brand-primary);
+      color: #fff;
+      font-family: 'Poppins', sans-serif;
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.06em;
       text-transform: uppercase;
       padding: 3px 8px;
-      border-radius: 20px;
+      border-radius: 999px;
     }
     .plan-sites {
       font-size: 12px;
@@ -596,9 +617,10 @@
     }
     .plan-sites strong { color: var(--text); font-weight: 600; }
     .plan-approach-title {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
+      font-family: 'Poppins', sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--brand-primary);
       text-transform: uppercase;
       letter-spacing: 0.07em;
       margin-bottom: 6px;
@@ -620,27 +642,26 @@
       padding: 0 2px;
     }
     .plan-step-num {
+      font-family: 'Poppins', sans-serif;
       font-size: 11px;
       font-weight: 700;
-      color: var(--accent);
+      color: var(--brand-primary);
       flex-shrink: 0;
       margin-top: 2px;
     }
-    .plan-actions {
-      display: flex;
-      gap: 8px;
-    }
+    .plan-actions { display: flex; gap: 8px; }
 
-    /* ─── Approval request card ─────────────────────────────────────────── */
+    /* ─── Approval card ──────────────────────────────────────────────── */
     .approval-card {
       background: var(--surface);
-      border: 1px solid var(--border);
+      border: 1px solid var(--amber);
+      border-left: 3px solid var(--amber);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow);
       padding: 14px 16px;
-      max-width: 88%;
+      max-width: 92%;
       align-self: flex-start;
-      animation: msg-enter 0.22s cubic-bezier(0.16,1,0.3,1);
+      animation: msg-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .approval-header {
       display: flex;
@@ -649,14 +670,15 @@
       margin-bottom: 8px;
     }
     .approval-badge {
-      background: var(--amber-soft);
-      color: var(--amber);
+      background: var(--amber);
+      color: #fff;
+      font-family: 'Poppins', sans-serif;
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.06em;
       text-transform: uppercase;
       padding: 3px 8px;
-      border-radius: 20px;
+      border-radius: 999px;
     }
     .approval-body {
       font-size: 13px;
@@ -665,13 +687,13 @@
       line-height: 1.5;
     }
     .approval-preview {
-      font-size: 12px;
       font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 12px;
       color: var(--text-muted);
       background: var(--surface-2);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      padding: 6px 10px;
+      padding: 7px 10px;
       margin-bottom: 12px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -679,16 +701,17 @@
     }
     .approval-actions { display: flex; gap: 8px; }
 
-    /* ─── Clarify request card ─────────────────────────────────────────── */
+    /* ─── Clarify card ───────────────────────────────────────────────── */
     .clarify-card {
       background: var(--surface);
-      border: 1px solid var(--border);
+      border: 1px solid var(--brand-primary);
+      border-left: 3px solid var(--brand-primary);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow);
       padding: 14px 16px;
-      max-width: 88%;
+      max-width: 92%;
       align-self: flex-start;
-      animation: msg-enter 0.22s cubic-bezier(0.16,1,0.3,1);
+      animation: msg-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .clarify-header {
       display: flex;
@@ -697,21 +720,21 @@
       margin-bottom: 8px;
     }
     .clarify-badge {
-      background: var(--blue-soft);
-      color: var(--blue);
+      background: var(--brand-primary);
+      color: #fff;
+      font-family: 'Poppins', sans-serif;
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.06em;
       text-transform: uppercase;
       padding: 3px 8px;
-      border-radius: 20px;
+      border-radius: 999px;
     }
     .clarify-body {
       font-size: 13px;
       color: var(--text);
       margin-bottom: 12px;
       line-height: 1.5;
-      font-style: normal;
     }
     .clarify-input-row {
       display: flex;
@@ -720,38 +743,38 @@
     }
     .clarify-input {
       flex: 1;
-      font-family: inherit;
+      font-family: 'Inter', sans-serif;
       font-size: 13px;
       color: var(--text);
-      background: var(--surface-2);
+      background: var(--surface-1);
       border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: 8px 10px;
+      border-radius: var(--radius);
+      padding: 9px 11px;
       resize: none;
-      min-height: 36px;
+      min-height: 38px;
       max-height: 96px;
       outline: none;
       transition: border-color 0.15s;
     }
-    .clarify-input:focus { border-color: var(--accent); }
+    .clarify-input:focus { border-color: var(--brand-primary); box-shadow: 0 0 0 3px var(--brand-primary-soft); }
     .clarify-input::placeholder { color: var(--text-faint); }
     .clarify-send-btn {
-      background: var(--accent);
-      color: var(--accent-text, white);
+      background: var(--brand-primary);
+      color: #fff;
       border: none;
-      border-radius: var(--radius-md);
-      padding: 0 14px;
+      border-radius: var(--radius);
+      padding: 0 16px;
+      font-family: 'Inter', sans-serif;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       transition: background 0.15s;
     }
-    .clarify-send-btn:hover { background: var(--accent-hover, var(--accent)); }
+    .clarify-send-btn:hover { background: var(--brand-primary-hover); }
     .clarify-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .clarify-actions { display: flex; gap: 8px; margin-top: 8px; }
-    .clarify-hint { font-style: normal; }
 
-    /* ─── Inline log lines inside assistant bubble ───────────────────────── */
+    /* ─── Inline logs (inside assistant bubbles) ─────────────────────── */
     .inline-log {
       font-size: 12px;
       color: var(--text-faint);
@@ -761,13 +784,13 @@
       border-top: 1px solid var(--border-soft);
     }
 
-    /* ─── Action buttons ─────────────────────────────────────────────────── */
+    /* ─── Buttons ────────────────────────────────────────────────────── */
     .btn {
       border-radius: var(--radius-sm);
       border: 1px solid var(--border);
       background: var(--surface-2);
       color: var(--text);
-      font: inherit;
+      font-family: 'Inter', sans-serif;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
@@ -775,31 +798,34 @@
       white-space: nowrap;
     }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .btn:hover:not(:disabled) { background: var(--surface-3); }
+    .btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--brand-light); }
 
-    .btn-sm { padding: 6px 12px; }
+    .btn-sm { padding: 7px 13px; }
 
     .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
+      background: var(--brand-primary);
+      border-color: var(--brand-primary);
       color: #fff;
     }
-    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .btn-primary:hover:not(:disabled) {
+      background: var(--brand-primary-hover);
+      border-color: var(--brand-primary-hover);
+    }
 
     .btn-danger {
       background: var(--red-soft);
-      border-color: rgba(220,38,38,0.2);
+      border-color: rgba(220, 38, 38, 0.25);
       color: var(--red);
     }
-    .btn-danger:hover:not(:disabled) { background: var(--red); color: #fff; }
+    .btn-danger:hover:not(:disabled) { background: var(--red); color: #fff; border-color: var(--red); }
 
     .btn-ghost { background: transparent; border-color: transparent; }
 
-    /* ─── Input area (bottom) ────────────────────────────────────────────── */
+    /* ─── Input area (bottom) ─────────────────────────────────────────── */
     #inputArea {
       background: var(--surface);
       border-top: 1px solid var(--border);
-      padding: 10px 14px 14px;
+      padding: 12px 16px 16px;
       flex-shrink: 0;
     }
 
@@ -811,14 +837,14 @@
 
     #goal {
       flex: 1;
-      min-height: 42px;
+      min-height: 44px;
       max-height: 120px;
-      padding: 9px 12px;
+      padding: 11px 13px;
       border-radius: var(--radius);
       border: 1px solid var(--border);
-      background: var(--bg);
+      background: var(--surface-1);
       color: var(--text);
-      font: inherit;
+      font-family: 'Inter', sans-serif;
       font-size: 14px;
       resize: none;
       outline: none;
@@ -826,105 +852,156 @@
       transition: var(--transition);
     }
     #goal:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
+      border-color: var(--brand-primary);
+      box-shadow: 0 0 0 3px var(--brand-primary-soft);
     }
     #goal::placeholder { color: var(--text-faint); }
 
     #sendBtn {
-      width: 40px;
-      height: 40px;
+      width: 42px;
+      height: 42px;
       border-radius: var(--radius);
       border: none;
-      background: var(--accent);
-      color: white;
+      background: var(--brand-primary);
+      color: #fff;
       cursor: pointer;
       display: grid;
       place-items: center;
       flex-shrink: 0;
       transition: var(--transition);
     }
-    #sendBtn:hover:not(:disabled) { background: var(--accent-hover); transform: scale(1.04); }
+    #sendBtn:hover:not(:disabled) {
+      background: var(--brand-primary-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 82, 204, 0.30);
+    }
     #sendBtn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     #sendBtn svg { width: 16px; height: 16px; pointer-events: none; }
 
-    /* Input hint */
     .input-hint {
       font-size: 11px;
       color: var(--text-faint);
-      margin-top: 5px;
+      margin-top: 6px;
       padding: 0 2px;
     }
 
-    /* Status pill — visible in header. Default "Idle", updates with phase. */
+    /* ─── Status pill (header) ───────────────────────────────────────── */
     .status-pill {
       display: inline-flex;
       align-items: center;
       padding: 3px 10px;
       border-radius: 999px;
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.01em;
+      font-family: 'Poppins', sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
       background: var(--surface-3);
       color: var(--text-muted);
-      border: 1px solid var(--border-soft);
+      border: 1px solid var(--border);
       white-space: nowrap;
       transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
-    .status-pill.connecting { background: #fff5e0; color: #8a6500; border-color: #f0d8a0; }
-    .status-pill.connected { background: #e7f7ee; color: #1f7a3a; border-color: #b8e6c8; }
-    .status-pill.executing { background: #eaf2ff; color: #2452b8; border-color: #c2d8f5; }
-    .status-pill.paused { background: #fdecec; color: #a8332e; border-color: #f3c4c0; }
-    .status-pill.done { background: #e7f7ee; color: #1f7a3a; border-color: #b8e6c8; }
-    .status-pill.error { background: #fdecec; color: #a8332e; border-color: #f3c4c0; }
-    .status-pill.reconnecting { background: #fff5e0; color: #8a6500; border-color: #f0d8a0; }
+    .status-pill.connecting    { background: var(--brand-light-soft); color: var(--brand-deep); border-color: rgba(109, 179, 216, 0.40); }
+    .status-pill.connected     { background: var(--green-soft); color: var(--green); border-color: rgba(22, 163, 74, 0.25); }
+    .status-pill.executing     { background: var(--brand-primary-soft); color: var(--brand-primary); border-color: rgba(0, 82, 204, 0.25); }
+    .status-pill.paused        { background: var(--amber-soft); color: var(--amber); border-color: rgba(217, 119, 6, 0.25); }
+    .status-pill.done          { background: var(--green-soft); color: var(--green); border-color: rgba(22, 163, 74, 0.25); }
+    .status-pill.error         { background: var(--red-soft); color: var(--red); border-color: rgba(220, 38, 38, 0.25); }
+    .status-pill.reconnecting  { background: var(--brand-light-soft); color: var(--brand-deep); border-color: rgba(109, 179, 216, 0.40); }
 
-    /* Tool subtitle — always-visible small mono line under the bubble title. */
+    /* ─── Tool subtitle (inside step bubbles) ───────────────────────── */
     .tool-subtitle {
       margin-top: 6px;
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
       font-size: 11px;
       color: var(--text-faint);
       word-break: break-all;
     }
 
-    /* Final answer — prominent card */
+    /* ─── Final answer / facts ───────────────────────────────────────── */
     .final-answer { font-size: 14px; line-height: 1.5; padding: 4px 0 12px; color: var(--text); }
     .final-answer-text { font-weight: 500; }
 
-    /* Page-context chip — anchors each step bubble to its captured page
-       state. Removes the temporal disconnect between "the agent said
-       blank page" and the user's actual current tab. */
-    .step-page-chip { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-faint); padding: 3px 0 6px; border-bottom: 1px dashed var(--border, rgba(255,255,255,0.08)); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .step-page-chip-icon { color: var(--accent, #ff7a45); flex-shrink: 0; }
-    .step-page-chip-url { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--text-muted, #888); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+    .step-page-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-faint);
+      padding: 3px 0 6px;
+      border-bottom: 1px dashed var(--border);
+      margin-bottom: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .step-page-chip-icon { color: var(--brand-primary); flex-shrink: 0; }
+    .step-page-chip-url { font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: var(--text-muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
     .step-page-chip-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 
-    /* Structured facts extracted from finalAnswer (URLs / IDs / dates) */
-    .facts { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; padding: 8px 10px; background: var(--surface-2, rgba(255,255,255,0.04)); border-radius: 8px; border: 1px solid var(--border, rgba(255,255,255,0.08)); }
+    .facts {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 4px 0 10px;
+      padding: 9px 11px;
+      background: var(--surface-2);
+      border-radius: 8px;
+      border: 1px solid var(--border-soft);
+    }
     .facts-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
-    .facts-label { color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; min-width: 64px; }
-    .facts-link { color: var(--accent, #ff7a45); text-decoration: none; word-break: break-all; padding: 2px 6px; background: rgba(255,122,69,0.08); border-radius: 4px; }
+    .facts-label {
+      font-family: 'Poppins', sans-serif;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 9px;
+      min-width: 64px;
+      font-weight: 700;
+    }
+    .facts-link {
+      color: var(--brand-primary);
+      text-decoration: none;
+      word-break: break-all;
+      padding: 2px 7px;
+      background: var(--brand-primary-soft);
+      border-radius: 4px;
+      font-weight: 500;
+    }
     .facts-link:hover { text-decoration: underline; }
-    .facts-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: var(--surface, rgba(255,255,255,0.06)); padding: 2px 6px; border-radius: 4px; color: var(--text); }
-    .facts-date { padding: 2px 6px; background: rgba(255,255,255,0.06); border-radius: 4px; color: var(--text); }
+    .facts-code {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      background: var(--surface);
+      padding: 2px 7px;
+      border-radius: 4px;
+      color: var(--text);
+      border: 1px solid var(--border-soft);
+    }
+    .facts-date { padding: 2px 7px; background: var(--surface); border-radius: 4px; color: var(--text); border: 1px solid var(--border-soft); }
 
-    /* Done caption — small status line at the bottom of the done bubble */
-    .done-caption { font-size: 11px; color: var(--text-faint); margin-top: 4px; display: flex; align-items: center; gap: 4px; }
-    .done-icon { font-size: 14px; color: var(--success, #4caf50); }
+    .done-caption {
+      font-size: 11px;
+      color: var(--text-faint);
+      margin-top: 4px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .done-icon { font-size: 14px; color: var(--green); }
   </style>
 </head>
 <body>
 
-<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<!-- ── Header ────────────────────────────────────────────────────────── -->
 <header>
   <div class="brand">
-    <div class="brand-icon">B</div>
-    <span>Brotto</span>
-  </div>
-
-  <div id="modelDisplay" title="Active model">
-    <span class="dot"></span><span id="modelName">—</span>
+    <!-- Inventic mountain mark: primary peak + secondary light-blue peak -->
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/>
+      <path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/>
+    </svg>
+    <span class="brand-name">Brotto</span>
   </div>
 
   <div id="workingIndicator" aria-live="polite">
@@ -933,11 +1010,9 @@
   </div>
 
   <div class="hdr-actions">
-    <!-- Stop button (visible when running) -->
     <button id="stopBtn" class="btn-icon btn-stop" title="Stop" style="display:none" aria-label="Stop task">
       <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
     </button>
-    <!-- Settings gear -->
     <button id="settingsBtn" class="btn-icon" title="Settings" aria-label="Open settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"></circle>
@@ -947,7 +1022,7 @@
   </div>
 </header>
 
-<!-- ── Hidden placeholders (preserved for sidepanel.js DOM-id compatibility) ── -->
+<!-- ── Hidden placeholders (preserved for background.ts DOM-id compatibility) ── -->
 <input id="plannerUrl" type="hidden" value="http://localhost:8000">
 <input id="startingUrl" type="hidden">
 <button id="startBtn" style="display:none">Start task</button>
@@ -957,7 +1032,7 @@
 <span id="stepCount" style="display:none">0 steps</span>
 <span id="timer" style="display:none"></span>
 
-<!-- ── Status bar (step counter + timer) ─────────────────────────────────── -->
+<!-- ── Status bar (steps + timer) ──────────────────────────────────── -->
 <div id="statusBar" aria-live="polite">
   <div class="cell">
     <span class="label">Steps</span>
@@ -969,7 +1044,7 @@
   </div>
 </div>
 
-<!-- ── Tab lifecycle (opened/closed/navigated during this task) ────────── -->
+<!-- ── Tab lifecycle ──────────────────────────────────────────────── -->
 <div id="tabBar" class="tab-bar" aria-live="polite" hidden>
   <div class="tab-bar-header">
     <span class="tab-bar-title">Tabs opened</span>
@@ -978,21 +1053,26 @@
   <div class="tab-bar-body" id="tabBarBody"></div>
 </div>
 
-<!-- ── Chat messages ───────────────────────────────────────────────────── -->
+<!-- ── Chat messages ──────────────────────────────────────────────── -->
 <main id="messages" aria-live="polite">
   <div class="empty-state" id="emptyState">
-    <div class="empty-logo">B</div>
+    <div class="empty-mark">
+      <svg class="brand-mark brand-mark--lg" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/>
+        <path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/>
+      </svg>
+    </div>
     <div class="empty-title">Brotto</div>
-    <div class="empty-sub">Describe what you'd like to do and Brotto will help you get it done in the browser.</div>
+    <div class="empty-sub">Describe what you'd like to do in your browser and Brotto will get it done for you.</div>
   </div>
 </main>
 
-<!-- ── New task button (shown after task completes or errors) ─────────── -->
+<!-- ── New task button ──────────────────────────────────────────── -->
 <button class="new-task-btn" id="newTaskBtn" title="Start a new task">
   + New task
 </button>
 
-<!-- ── Input area ──────────────────────────────────────────────────────── -->
+<!-- ── Input area ────────────────────────────────────────────────── -->
 <section id="inputArea">
   <div class="input-row">
     <textarea id="goal" placeholder="What would you like Brotto to do?" rows="1" maxlength="2000" aria-label="Task description"></textarea>
@@ -1003,10 +1083,10 @@
       </svg>
     </button>
   </div>
-  <div class="input-hint">Press Enter to send &nbsp;·&nbsp; Shift+Enter for newline</div>
+  <div class="input-hint">Press Enter to send · Shift+Enter for newline</div>
 </section>
 
-<!-- ── Settings overlay ───────────────────────────────────────────────── -->
+<!-- ── Settings overlay ─────────────────────────────────────────── -->
 <div id="settingsOverlay" role="dialog" aria-modal="true" aria-label="Settings">
   <div id="settingsPanel">
     <button id="settingsClose" class="btn-icon" aria-label="Close settings">
