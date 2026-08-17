@@ -98,16 +98,26 @@ The mountain mark is two triangles:
 </svg>
 ```
 
-**Sizes:**
+**Single source of truth:** `clients/brotto-extension/src/assets/icon.svg`. The same geometry is reused inline in `sidepanel.html` for the header and empty-state marks. If you change the mountain, update the SVG and rebuild — the build script renders PNGs at 16/32/48/128 for the extension icon.
+
+**Sizes (in-app):**
 
 - Header: 24×24 px
 - Empty state: 56×56 px (use the `--lg` modifier class)
+
+**Sizes (extension icon):**
+
+- 16×16 (toolbar)
+- 32×32 (Windows/HiDPI toolbar)
+- 48×48 (extension management page)
+- 128×128 (install + Chrome Web Store)
 
 **Rules:**
 
 - Never place the mark on a busy background without a white container.
 - Never animate the mark.
 - Never recolor — the two blues are the brand identity.
+- The toolbar icon is the same mountain as the in-app marks — don't deviate.
 
 ---
 
@@ -216,5 +226,7 @@ Before merging a UI change, confirm:
 
 - Brand PDF: `assets/Inventic_Brand_OnePager_Updated.pdf`
 - Source of truth: `clients/brotto-extension/src/sidepanel.html` (the `:root` block and component styles).
+- Mountain mark source: `clients/brotto-extension/src/assets/icon.svg` (also reused inline in `sidepanel.html`).
+- Build: `cd clients/brotto-extension && node build.mjs` — requires `rsvg-convert` (librsvg) on the host for icon PNG generation.
 - Extension name: `Brotto` (kept as-is for now).
 - Brand version: `v1.0` — bump the version comment in the CSS `:root` block whenever this document changes.
