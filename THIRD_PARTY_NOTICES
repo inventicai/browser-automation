@@ -1,0 +1,61 @@
+# Third Party Notices
+
+This file includes attribution and licensing information for third-party
+dependencies used by Brotto. License compatibility for new dependencies should
+be checked before adding them — Apache-2.0, MIT, BSD-2, BSD-3 are preferred.
+
+## Orchestrator (Python)
+
+Pinned in `requirements.txt` (runtime) and `requirements-dev.txt` (test/dev).
+The full set is also recorded in `services/brotto-orchestrator/uv.lock`.
+
+| Package | Min version | License | Purpose |
+| --- | --- | --- | --- |
+| fastapi | 0.104.0 | MIT | HTTP + WebSocket server |
+| uvicorn[standard] | 0.24.0 | BSD-3-Clause | ASGI server |
+| pydantic | 2.0 | MIT | Data models / validation |
+| pydantic-ai | 0.0.1 | MIT | Agent framework (model-agnostic) |
+| aiohttp | 3.9.0 | Apache-2.0 | Async HTTP client |
+| anthropic | 0.21.0 | MIT | Anthropic API client (default model provider) |
+| python-dotenv | 1.0.0 | BSD-3-Clause | `.env` loading |
+| playwright | 1.40.0 | Apache-2.0 | Dev-mode browser automation / CDP access |
+| pytest | 7.0 | MIT | Test runner |
+| pytest-asyncio | 0.21.0 | Apache-2.0 | Async test support |
+| pytest-cov | 4.0 | MIT | Coverage reporting |
+
+## Extension (TypeScript)
+
+Pinned in `clients/brotto-extension/package.json` and locked in
+`clients/brotto-extension/package-lock.json`.
+
+| Package | Version | License | Purpose |
+| --- | --- | --- | --- |
+| typescript | ^5.3.3 | Apache-2.0 | Type checking |
+| esbuild | ^0.28.1 | MIT | Build / bundle |
+| @types/chrome | ^0.0.268 | MIT | Chrome extension type definitions |
+| @types/node | ^20.11.0 | MIT | Node type definitions |
+
+## Model
+
+Brotto uses pydantic-ai to drive an external LLM. The default model is
+`claude-haiku-4-5-20251001` from Anthropic, configurable via the
+`AGENT_MODEL` environment variable. No model weights are bundled with this
+repository.
+
+## License Compatibility
+
+This project is released under Apache-2.0. The combination of MIT, BSD, and
+Apache-2.0 dependencies above is compatible with that license.
+
+## Dependency Tracking
+
+All third-party dependencies are tracked in:
+
+- `requirements.txt` and `requirements-dev.txt` (root, used by `Dockerfile`)
+- `services/brotto-orchestrator/pyproject.toml` and `uv.lock`
+- `clients/brotto-extension/package.json` and `package-lock.json`
+
+## Contribution Notice
+
+When contributing to this project, ensure any new dependencies have
+compatible licenses (Apache-2.0, MIT, BSD-2, BSD-3 preferred).
