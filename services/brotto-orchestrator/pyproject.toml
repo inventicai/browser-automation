@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brotto-orchestrator"
+version = "0.1.0"
+description = "Browser automation orchestrator with agent loop and extension support"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0",
+    "pydantic-ai>=0.0.1",
+    "aiohttp>=3.9.0",
+    "anthropic>=0.21.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.setuptools]
+packages = ["brotto_orchestrator"]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
