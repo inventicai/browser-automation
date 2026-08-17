@@ -1,9 +1,0 @@
-# Cloudflare Pages config for the Brotto install / distribution site.
-#
-# This file targets Cloudflare PAGES, not Workers, but `wrangler pages deploy`
-# requires a wrangler.toml at the repo root with a `pages_build_output_dir`
-# pointing at the static directory that gets uploaded. Keep this minimal;
-# add Pages Functions or env bindings here if/when we need them.
-name = "brotto-dist"
-compatibility_date = "2024-09-01"
-pages_build_output_dir = "install"

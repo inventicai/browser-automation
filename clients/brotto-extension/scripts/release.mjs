@@ -1,5 +1,9 @@
-// Build a signed CRX3 + update.xml + Edge ZIP from the existing `dist/`.
+// Build a signed CRX3 + Edge ZIP from the existing `dist/`.
 // Run after `npm run build` (or `node build.mjs`).
+//
+// `update.xml` is intentionally not produced — that lives behind a
+// hosting layer (CF Pages / GH Pages / similar). For now, GH Releases
+// is the distribution channel; testers re-download to update.
 import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,8 +16,6 @@ const distDir   = join(extDir, 'dist');
 const keyPath   = join(extDir, 'crx-signing.pem');
 const crxPath   = join(distDir, 'brotto.crx');
 const edgePath  = join(distDir, 'brotto-edge.zip');
-const xmlPath   = join(distDir, 'update.xml');
-const distBase  = 'https://dist.inventic.ch/brotto';
 
 if (!existsSync(distDir)) {
   console.error(`No ${distDir}/ found. Run \`npm run build\` first.`);
@@ -34,21 +36,10 @@ else {
 const manifest = JSON.parse(readFileSync(join(extDir, 'manifest.json'), 'utf8'));
 const version  = manifest.version;
 
-const crx = new Crx({ privateKey: pem, codebase: `${distBase}/brotto-${version}.crx` });
+const crx = new Crx({ privateKey: pem });
 await crx.load(distDir);
 const crxBuffer = await crx.pack();
-const appId = crx.generateAppId(crx.publicKey);
 writeFileSync(crxPath, crxBuffer);
-
-// CRX3 requires strict-monotonic version bumps to ship updates.
-const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
-  <app appid="${appId}">
-    <updatecheck codebase="${distBase}/brotto-${version}.crx" version="${version}" />
-  </app>
-</gupdate>
-`;
-writeFileSync(xmlPath, xml);
 
 // Edge Add-ons wants a plain ZIP of the unpacked dist/ (no CRX/XML/ZIP inside it).
 execSync(`zip -r brotto-edge.zip . -x "brotto.crx" "update.xml" "brotto-edge.zip"`,
@@ -57,5 +48,4 @@ execSync(`zip -r brotto-edge.zip . -x "brotto.crx" "update.xml" "brotto-edge.zip
 console.log('--- Release artifacts ---');
 console.log(`version : ${version}`);
 console.log(`crx     : ${crxPath}  (${statSync(crxPath).size} bytes)`);
-console.log(`xml     : ${xmlPath}`);
 console.log(`edge zip: ${edgePath}`);

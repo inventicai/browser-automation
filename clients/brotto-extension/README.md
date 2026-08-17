@@ -36,14 +36,13 @@ The browser extension provides:
 
 ### For Internal Testers
 
-Pre-built signed artifacts are published automatically when a version tag is pushed:
+Pre-built signed artifacts are published to **GitHub Releases** whenever a version tag is pushed.
 
-- **Chrome (engineers + non-engineers):** visit `https://dist.inventic.ch/`, click **Add Brotto to Chrome**, drag the downloaded `brotto.crx` onto `chrome://extensions/` with Developer mode enabled. Auto-updates roll in after the first install — no re-install needed.
-- **Edge (non-engineers):** install from the unlisted Edge Add-ons share link. First-time setup: see `docs/packaging/edge-unlisted.md`.
+- Visit [Releases](https://github.com/inventicai/browser-automation/releases) and download the latest `brotto.crx`.
+- Open `chrome://extensions/`, enable **Developer mode** (one-time, top-right), drag `brotto.crx` onto the page, confirm the install prompt.
+- The Brotto toolbar icon appears; click it to open the side panel.
 
-Both channels update silently. No rebuild required on your end.
-
-The full distribution story (signing key, release CI, hosting) is in `docs/packaging/README.md`.
+Updates are manual today: re-download the latest `brotto.crx` from the Releases page and accept the install prompt again. Auto-update will come back when we add a hosting layer (see `docs/packaging/README.md`).
 
 ### From Source (for contributors)
 
