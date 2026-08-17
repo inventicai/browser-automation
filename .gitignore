@@ -1,0 +1,53 @@
+.worktrees/
+worktrees/
+
+# Dependencies
+node_modules/
+.pnpm-lock.yaml
+pnpm-lock.yaml
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+services/brotto-orchestrator/runs/
+*.zip
+
+# Environment
+.env
+.env.*
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Runtime
+logs/
+*.log
+.pw-browsers/
+
+# Build artifacts
+services/brotto-orchestrator/dist/
+services/brotto-orchestrator/node_modules/
+.turbo/
