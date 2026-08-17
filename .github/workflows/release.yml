@@ -52,19 +52,24 @@ jobs:
         working-directory: clients/brotto-extension
         run: npm run release:chrome
 
-      - name: Stage artifacts for GH Pages
+      - name: Stage artifacts for GH Pages (root of source branch)
         run: |
-          mkdir -p install/release
-          cp clients/brotto-extension/dist/brotto.crx install/release/brotto.crx
-          cp clients/brotto-extension/dist/update.xml install/release/update.xml
+          mkdir -p release
+          cp clients/brotto-extension/dist/brotto.crx release/brotto.crx
+          cp clients/brotto-extension/dist/update.xml release/update.xml
 
-      - name: Deploy to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
+      # GitHub Pages in this repo serves the root of `packaging/self-host`
+      # directly (set under Settings -> Pages). So the artifacts above get
+      # picked up automatically once they land on that branch. We commit
+      # them back rather than pushing to a separate `gh-pages` branch.
+      - name: Commit artifacts to source branch
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./install
-          force_orphan: true
-          enable_jekyll: false
+          branch: packaging/self-host
+          commit_message: "Release ${{ github.ref_name }}"
+          file_pattern: "release/*"
+          status: false
+          skip_fetch: false
 
       - name: GitHub Release (Edge ZIP only)
         uses: softprops/action-gh-release@v2

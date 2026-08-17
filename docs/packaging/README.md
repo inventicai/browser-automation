@@ -1,6 +1,6 @@
 # Extension packaging & distribution
 
-Brotto's browser extension is published without going through the Chrome Web Store. **The channel is GitHub Pages** — each `v*` tag gets a signed `.crx` and a Chrome `update.xml` deployed to a `gh-pages` branch, which GitHub Pages serves at `https://inventicai.github.io/browser-automation/`.
+Brotto's browser extension is published without going through the Chrome Web Store. **The channel is GitHub Pages** — each `v*` tag gets a signed `.crx` and a Chrome `update.xml` committed back to the source branch, which GitHub Pages serves at `https://inventicai.github.io/browser-automation/`.
 
 ## How a release ships
 
@@ -9,11 +9,12 @@ Brotto's browser extension is published without going through the Chrome Web Sto
 3. `.github/workflows/release.yml` runs:
    - Builds the extension (`npm run build`)
    - Runs `scripts/release.mjs` to sign the CRX (`dist/brotto.crx`), write `dist/update.xml`, and zip the unpacked variant for Edge Add-ons (`dist/brotto-edge.zip`)
-   - Stages `dist/brotto.crx` and `dist/update.xml` into `install/release/`
-   - Pushes the `install/` directory to the `gh-pages` branch via `peaceiris/actions-gh-pages`
+   - Stages `dist/brotto.crx` and `dist/update.xml` into `release/` at the repo root
+   - Commits `release/*` back to the source branch (`packaging/self-host`) via `stefanzweifel/git-auto-commit-action`
    - Attaches `brotto-edge.zip` to a GitHub Release at the tag
-4. Chrome testers visit the Pages URL, click Download, drag the `.crx` into `chrome://extensions/`.
-5. Chrome then auto-polls `update.xml` on subsequent launches and pulls newer `brotto.crx` versions transparently.
+4. GitHub Pages (already configured to deploy from `packaging/self-host`, root `/`) serves the new `index.html` + `release/brotto.crx` + `release/update.xml` within ~30s of the commit landing.
+5. Chrome testers visit the Pages URL, click Download, drag the `.crx` into `chrome://extensions/`.
+6. Chrome auto-polls `update.xml` on subsequent launches and pulls newer `brotto.crx` versions transparently.
 
 ## Auto-update
 
@@ -41,19 +42,19 @@ clients/brotto-extension/
   manifest.json             version + update_url pointing at GH Pages
   crx-signing.pem           gitignored; lives in 1Password + GH secret BROTTO_CRX_PEM
 
-install/                    GH Pages source (peaceiris deploys to `gh-pages` branch)
-  index.html                landing page with the download button
-  release/                  CI-staged: brotto.crx + update.xml (gitignored)
+index.html                  GH Pages landing page with the download button
+release/                    CI-committed: brotto.crx + update.xml (small binaries)
 
 .github/workflows/release.yml
-  Triggered on tag v*  →  builds, signs, deploys to gh-pages, attaches Edge ZIP to GH Release
+  Triggered on tag v*  →  builds, signs, commits release/* back to source branch,
+                          attaches Edge ZIP to GH Release
 ```
 
 ## Setup checklist (one-time)
 
 - [ ] **Generate the signing key.** `openssl genrsa -out clients/brotto-extension/crx-signing.pem 2048`. Back up out-of-band (1Password). Store contents in the `BROTTO_CRX_PEM` GitHub secret (include BEGIN/END markers and newlines).
-- [ ] **Enable GitHub Pages.** Repo → Settings → Pages → Source = "Deploy from a branch" → branch = `gh-pages`, folder = `/` (root). Save. (The first tag push auto-creates the `gh-pages` branch via `peaceiris/actions-gh-pages`.)
-- [ ] **Verify the URL.** After the first tag lands, `https://inventicai.github.io/browser-automation/` should serve the install landing. If the org is private or the repo is private, GitHub Pages is gated — flip repo visibility or use a separate public mirror, your call.
+- [ ] **GitHub Pages is already configured** for this repo: branch = `packaging/self-host`, path = `/`. Pushing to that branch deploys within ~30s. (Verified via `gh api repos/inventicai/browser-automation/pages`.)
+- [ ] **Verify the URL.** After the first tag lands, `https://inventicai.github.io/browser-automation/` should serve the install landing and `/release/brotto.crx` should return the file. If the org is private or the repo is private, GitHub Pages is gated — flip repo visibility or use a separate public mirror, your call.
 
 That's it. Push a `v*` tag and the GH Action does the rest.
 
