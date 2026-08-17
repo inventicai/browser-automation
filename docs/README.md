@@ -20,6 +20,17 @@ python services/brotto-orchestrator/start_server.py
 
 Build the extension: `cd clients/brotto-extension && npm install && npm run build`, then load `dist/` as an unpacked extension in Chrome.
 
+## Distribution channels
+
+The extension ships through two internal channels (no public Chrome Web Store).
+
+| Channel | Audience | Friction |
+|---|---|---|
+| Self-hosted CRX on Cloudflare Pages | Chrome engineers | Drag-drop a `.crx` once; auto-updates after |
+| Unlisted Edge Add-ons | Chrome + Edge non-engineers | Click a link, install, done |
+
+See `docs/packaging/README.md` for the hub, or jump straight to `docs/packaging/edge-unlisted.md` to publish an Edge listing.
+
 ## How it works
 
 1. Extension attaches to a user-selected tab via `chrome.debugger`.

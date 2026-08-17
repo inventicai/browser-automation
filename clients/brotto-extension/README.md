@@ -34,28 +34,36 @@ The browser extension provides:
    - Click "Load unpacked"
    - Select the `dist` folder
 
-### Manual Install in Chrome (development)
+### For Internal Testers
+
+Pre-built signed artifacts are published automatically when a version tag is pushed:
+
+- **Chrome (engineers + non-engineers):** visit `https://dist.inventic.ch/`, click **Add Brotto to Chrome**, drag the downloaded `brotto.crx` onto `chrome://extensions/` with Developer mode enabled. Auto-updates roll in after the first install — no re-install needed.
+- **Edge (non-engineers):** install from the unlisted Edge Add-ons share link. First-time setup: see `docs/packaging/edge-unlisted.md`.
+
+Both channels update silently. No rebuild required on your end.
+
+The full distribution story (signing key, release CI, hosting) is in `docs/packaging/README.md`.
+
+### From Source (for contributors)
+
+For anyone modifying the extension:
 
 1. Build the extension:
    ```bash
-   pnpm install
-   bash scripts/build-extension.sh
+   cd clients/brotto-extension
+   npm install
+   npm run build
    ```
-   This produces `build/browser-extension-1.0.0.zip` and a `dist/` folder.
+   This produces a `dist/` folder with the unpacked extension.
 
-2. Open `chrome://extensions/` in Chrome
+2. Open `chrome://extensions/` in Chrome (or Edge).
 
-3. Enable **Developer mode** (toggle top right)
+3. Enable **Developer mode** (toggle top right).
 
-4. Click **Load unpacked** and select `clients/brotto-extension/dist/`
-   - Or drag `clients/brotto-extension/build/browser-extension-1.0.0.zip` onto the extensions page
+4. Click **Load unpacked** and select `clients/brotto-extension/dist/`.
 
-5. Click the extension icon in the Chrome toolbar to open the popup. Configure the orchestrator server URL (WSS) in the options page.
-
-### From Chrome Web Store (when published)
-
-1. Install from the Chrome Web Store
-2. Click the extension icon to get started
+5. Click the extension icon in the toolbar to open the side panel. Configure the orchestrator server URL (WSS) when prompted.
 
 ## Setup
 

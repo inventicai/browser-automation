@@ -1,0 +1,77 @@
+name: Release
+
+# Required GitHub repository secrets:
+#   BROTTO_CRX_PEM  - RSA PEM (2048-bit) contents of clients/brotto-extension/crx-signing.pem.
+#                     Generate with: openssl genrsa -out clients/brotto-extension/crx-signing.pem 2048
+#                     Paste the full file (including BEGIN/END markers and newlines) into the secret.
+#                     The file is gitignored; never commit it. Runners are ephemeral so the staged
+#                     copy on disk is fine.
+#   CF_API_TOKEN    - Cloudflare API token with "Cloudflare Pages: Edit" permission for this account.
+#   CF_ACCOUNT_ID   - Cloudflare account ID (32-char hex). The Pages project is hardcoded as `brotto-dist`.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: clients/brotto-extension/package-lock.json
+
+      # CRITICAL: Ubuntu CI runners don't ship `zip` by default, but scripts/release.mjs
+      # shells out to `zip -r brotto-edge.zip ...` for the Edge Add-ons archive. Install it
+      # before invoking the release script.
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Install npm dependencies
+        working-directory: clients/brotto-extension
+        run: npm ci
+
+      - name: Stage signing key
+        run: |
+          echo "${{ secrets.BROTTO_CRX_PEM }}" > clients/brotto-extension/crx-signing.pem
+          chmod 600 clients/brotto-extension/crx-signing.pem
+
+      - name: Build extension
+        working-directory: clients/brotto-extension
+        run: npm run build
+
+      - name: Release artifacts (CRX + update.xml + Edge ZIP)
+        working-directory: clients/brotto-extension
+        run: npm run release:chrome
+
+      - name: Stage artifacts for Pages deploy
+        run: |
+          cp clients/brotto-extension/dist/brotto.crx install/brotto.crx
+          cp clients/brotto-extension/dist/update.xml install/update.xml
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          command: pages deploy install --project-name=brotto-dist --branch=main --commit-dirty=true
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: clients/brotto-extension/dist/brotto-edge.zip
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
+
+      - name: Cleanup staged artifacts
+        run: rm install/brotto.crx install/update.xml
