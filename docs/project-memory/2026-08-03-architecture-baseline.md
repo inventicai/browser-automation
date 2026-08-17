@@ -1,97 +1,123 @@
-# Architecture Baseline: Fara 1.5 Browser Automation MVP
+# Architecture Baseline: Brotto Browser Automation MVP
 
-**Recorded:** 2026-08-03
-**Status:** Verified repository baseline before canonical-loop implementation
+**Recorded:** 2026-08-17 (post-pivot)
+**Status:** Verified repository baseline reflecting current Brotto implementation
 
 ## Product intent
 
-The product is a self-hosted browser automation platform using Fara 1.5 for computer-use decisions and a thin browser client for execution in an existing authenticated browser session. The client may transmit screenshots and deliberately selected, sanitized observation metadata to the customer's self-hosted server. It must never transmit cookies, authorization headers, local storage, session storage, credentials, password values, or raw browser-profile data.
+Brotto is a self-hosted browser automation agent that drives a user's real
+Chrome from a side-panel extension. The orchestrator runs the agent loop
+against an external LLM (Anthropic Claude default, model-agnostic via
+pydantic-ai); the extension drives the browser via `chrome.debugger`.
 
-The longer-term product records complete action trajectories. When recipe recording is enabled, a successful trajectory can later be compiled into a deterministic Playwright workflow that runs without model inference and consumes zero model tokens.
+The agent only ever sees:
 
-## Approved delivery order
+- The current URL and page title.
+- A filtered accessibility tree (interactive roles only, viewport-first).
+- Screenshots taken via `Page.captureScreenshot`.
+- Text it explicitly reads from a CSS-selected region (returned once).
 
-1. Canonical agent loop and versioned client protocol.
-2. Secure thin extension with deterministic observations and action acknowledgements.
-3. Append-only trajectory and audit recording.
-4. Recipe intermediate representation, Playwright compiler, and validated zero-token replay.
+The extension never transmits cookies, authorization headers, localStorage,
+sessionStorage, credentials, password values, or raw browser-profile data.
 
-Each item must produce a working vertical slice and pass its acceptance tests before the next item begins.
+## Architecture
 
-## Approved architecture decisions
+```
+                ┌──────────────────────────────────────┐
+                │  Brotto extension (Manifest V3)     │
+                │  - background service worker        │
+                │  - chrome.debugger wrapper          │
+                │  - AX-tree capture + diff           │
+                │  - side-panel UI                    │
+                └─────────────────┬────────────────────┘
+                                  │  WSS (outbound, auth)
+                                  ▼
+                ┌──────────────────────────────────────┐
+                │  Brotto orchestrator (FastAPI)       │
+                │  - /ws/ext/{id}  extension relay     │
+                │  - /ws/{user}    Playwright client   │
+                │  - /run          headless task run   │
+                │  - agent harness (observe→plan→act)  │
+                │  - AX filter + diff + guardrails     │
+                └─────────────────┬────────────────────┘
+                                  │  pydantic-ai
+                                  ▼
+                          External LLM (Anthropic Claude)
+```
 
-- TypeScript owns the control plane and canonical agent loop.
-- Python is restricted to the Fara inference service.
-- The committed shared schema packages become the only protocol and action contracts.
-- The client connects outbound over authenticated WSS.
-- Exactly one action may be in flight per session.
-- Every action references the observation from which it was planned.
-- Every action returns an explicit typed result and a settled post-action observation.
-- Invalid model output is a repairable inference error, never successful completion.
-- Model completion is a proposal that requires structured findings and deterministic verification.
-- Security policy is enforced in code on both orchestrator and client boundaries.
-- Every state transition produces a versioned trajectory event for future audit and recipe compilation.
+## Locked architecture decisions
+
+- Python owns the orchestrator and agent loop. TypeScript owns only the
+  extension client.
+- `chrome.debugger` is the only browser control surface. The orchestrator
+  never speaks CDP directly to the user's browser — it sends typed actions
+  over the WebSocket relay and the extension executes them.
+- One in-flight action per session. Each action references the observation
+  it was planned against.
+- Security policy is enforced in code on both orchestrator and extension
+  boundaries; irreversible actions require explicit human approval.
+- The committed action/observation contracts in
+  `services/brotto-orchestrator/src/brotto_orchestrator/contracts.py`
+  are the only protocol surface; the agent loop and the extension both
+  consume them.
 
 ## Verified current-state findings
 
-The active demonstration does not use the intended platform architecture. The browser extension talks to an ad-hoc Python HTTP/SSE relay in `services/playwright-relay/fara-relay.py`. That relay calls the Fara-compatible endpoint directly and maintains process-local history. The committed TypeScript orchestrator, shared relay protocol, shared Fara action schema, policy engine, audit service, and structured extension relay are not connected to this runtime path.
+The current runtime path is end-to-end:
 
-The observed premature completion has deterministic causes:
+- Extension (`clients/brotto-extension/src/background.ts`) attaches to a
+  user-selected tab, captures filtered AX targets via `Accessibility.getFullAXTree`
+  + `DOM.getBoxModel`, and ships them as `observation` messages over a
+  WebSocket opened at `ws://{server}/ws/ext/{session_id}`.
+- Orchestrator (`services/brotto-orchestrator/src/brotto_orchestrator/main.py`)
+  accepts the WS, runs `AgentHarness`, and pushes typed `action` /
+  `step_progress` / `ask_human` / `approval_required` messages back.
+- Extension executes actions via an allowlisted CDP command set
+  (`Page.navigate`, `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`,
+  `Runtime.evaluate` for text reads only — no arbitrary JS).
+- Dev mode (`POST /run` + `start_server.py`) drives Playwright directly
+  against a local Chromium and exercises the same `AgentHarness`.
+- `AgentHarness` (`agent/harness.py`) uses pydantic-ai with `AgentDecision`
+  as the structured output type and `SYSTEM_PROMPT` (`agent/prompt.py`)
+  for tool surface and rules.
+- `AXTreeExtractor` and CDP filtering live in
+  `dev/ax_tree_extractor.py` and `agent/ax_filter.py` / `agent/ax_diff.py`.
 
-- Unparseable, malformed, prose-only, or unexpected model output falls through to `done`.
-- `terminate` is trusted without completion evidence.
-- `pause_and_memorize_fact` is treated as terminal.
-- Requested actions have no action ID, observation ID, result acknowledgement, or verified post-state.
-- The controller assumes execution succeeded after a fixed delay.
-- Duplicate continuations can create overlapping inference.
-- Both an executable `done` action and a terminal `done` event are emitted.
-- Prompt instructions such as a minimum action count are not enforced by the controller.
+## Existing components worth retaining
 
-There are three incompatible action contracts in the repository: the active Python relay XML dialect, the TypeScript orchestrator parser dialect, and the inference-service prompt dialect. These must be replaced by one constrained, versioned structured-output contract.
-
-## Existing components worth retaining selectively
-
-- `packages/fara-action-schema`: useful action and observation concepts, but it needs reconciliation and versioning.
-- `packages/relay-protocol`: useful sequencing, heartbeat, and session concepts, but it is not wired into the active path and conflicts with some eval expectations.
-- `services/agent-orchestrator`: useful state-machine, history, retry, budget, executor, and completion abstractions, but the server runtime is a scaffold and does not execute the loop.
-- `clients/browser-extension/src/relay.ts`: useful WebSocket/reconnect concepts, but it is unused by the active background service worker.
-- `clients/browser-extension/src/action-executor.ts`: useful structured executor concepts, but it is duplicated by the active background action switch.
-- `services/audit-service`: substantial schema, persistence, privacy, export, and retention work; it is disconnected from the active loop and has causal-linkage/session-caching defects.
-- `services/artifact-service`: useful encrypted artifact primitives; it is not trajectory storage and needs durable metadata/key-management hardening before production use.
+- `agent/harness.py` — agent loop with history windowing, AX diff, scratchpad.
+- `cdp/relay.py`, `cdp/extension_relay.py`, `cdp/watchdog.py` — CDP transport.
+- `agent/guardrails.py` — login-page detection, critical-action prompts,
+  redirect waits.
+- `agent/stagnation.py` — loop detection and forced terminate.
+- `agent/run_logger.py` — per-run structured logging.
+- `session/registry.py`, `session/auth.py` — token-gated session lifecycle.
+- `contracts.py` — `ObservationV1` and `BrowserAction` Pydantic models.
 
 ## Components that do not exist yet
 
-- A durable canonical run/step/action/observation event log integrated with execution.
-- A recipe recording toggle tied to trajectory eligibility.
-- A recipe schema or intermediate representation.
-- Semantic target stabilization and locator synthesis.
-- A deterministic Playwright compiler.
-- Recipe static security validation, replay validation, versioning, signing, or registry.
-- A zero-token recipe runtime with equivalence telemetry.
-
-## Dirty-worktree warning
-
-The linked implementation worktree contains extensive pre-existing modified files and generated dependency/build directories. The active `services/playwright-relay/` implementation is untracked, including an `.env` file. Implementation work must preserve these changes, stage only deliberate files, and never commit secrets, dependency directories, or generated bundles. Legacy runtime paths should be quarantined only after the canonical path passes equivalence and end-to-end tests.
+- Recipe recording / deterministic replay.
+- Trajectory event log for audit + replay input.
+- Multi-tab coordination beyond the opener-tab fallback already in
+  `background.ts`.
+- Visual regression / screenshot diffing.
 
 ## Security invariants
 
 - No cookie export or cookie-reading protocol capability.
-- No authorization-header, storage-value, credential, password, or browser-profile transmission.
-- Screenshot and semantic metadata transmission only to the configured customer-controlled server.
-- Sanitization and redaction occur before an observation leaves the browser.
-- Only explicitly attached tabs and allowed HTTP(S) origins may be automated.
-- High-impact actions require deterministic policy approval.
-- Sessions use random identifiers, short-lived credentials, message expiry, sequence validation, payload limits, and replay protection.
-- Durable artifacts are encrypted, content-addressed, retention-controlled, and excluded by default.
+- No authorization-header, storage-value, credential, password, or
+  browser-profile transmission.
+- Screenshots and AX-tree metadata go only to the configured customer
+  server.
+- `Runtime.evaluate` is restricted to text reads and pre-allowed selectors.
+- Only the user-selected tab is attached; immediate detach on socket close.
+- High-impact actions require explicit human approval in the side panel.
+- Sessions use random identifiers, short-lived tokens, message expiry,
+  sequence validation, payload limits, and replay protection.
 
-## Target acceptance KPIs for the canonical loop
+## Dirty-worktree warning
 
-- Zero malformed model responses classified as completion.
-- Zero forbidden browser data transmitted in the security corpus.
-- Exactly one in-flight action per session.
-- Idempotent handling of every duplicate action result in the test corpus.
-- Every terminal success contains structured findings and verifier evidence.
-- No duplicate completion events.
-- Cancellation reaches a terminal state and detaches the client within five seconds.
-- At least 90% success on the controlled multi-step browser-task suite for the selected Fara deployment.
-- Every executed action links its pre-observation, proposal, policy decision, result, and post-observation.
+The local worktree may contain generated dependency directories (`.venv`,
+`node_modules`, `dist`, `__pycache__`), `.env` files, and logs. These are
+covered by `.gitignore` and must never be committed. Stage only deliberate
+files; preserve unrelated in-progress work.
