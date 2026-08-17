@@ -97,6 +97,17 @@ docker build -t brotto-orchestrator .
 docker run --rm -p 8000:8000 brotto-orchestrator
 ```
 
+## Commit Conventions
+
+Never mention Claude, Anthropic, or any AI tool in commit messages. That means:
+
+- No `Co-Authored-By: Claude …` (or any model) trailers.
+- No "Generated with [tool]" footers.
+- No body text that names an AI assistant, vendor, or `noreply@…` address.
+- Commit authors should appear as humans only.
+
+If a template or tool auto-injects such a trailer, strip it before `git commit` runs. Applies to every commit on every branch in this repo, including past history — use `git filter-repo` if a slip is found in existing commits.
+
 ## Relevant Skills
 
 This project uses GSD-style planning workflow:
