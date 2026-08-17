@@ -1,13 +1,15 @@
 {
   "name": "@brotto/browser-extension",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Brotto Browser Extension - Drives your real Chrome via the Brotto orchestrator",
   "main": "src/background.js",
   "scripts": {
     "build": "node build.mjs",
     "build:tsc": "tsc --noEmit",
     "watch": "tsc --watch",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "release:chrome": "node scripts/release.mjs",
+    "release:edge": "node scripts/release.mjs"
   },
   "keywords": [
     "brotto",
@@ -22,6 +24,7 @@
   "devDependencies": {
     "@types/chrome": "^0.0.268",
     "@types/node": "^20.11.0",
+    "crx": "^5.0.1",
     "esbuild": "^0.28.1",
     "typescript": "^5.3.3"
   }

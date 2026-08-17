@@ -47,6 +47,9 @@ logs/
 *.log
 .pw-browsers/
 
+# Extension release signing key (never commit — back up out-of-band)
+clients/brotto-extension/crx-signing.pem
+
 # Build artifacts
 services/brotto-orchestrator/dist/
 services/brotto-orchestrator/node_modules/

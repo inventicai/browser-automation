@@ -1,7 +1,9 @@
 {
   "manifest_version": 3,
+  "update_url": "https://dist.inventic.ch/brotto/update.xml",
   "name": "Brotto",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "_version_note": "CRX3 requires a strict-monotonic version bump to ship updates.",
   "description": "Drive your real browser with any AI model. Model-agnostic, open-source.",
   "background": {
     "service_worker": "background.js"
