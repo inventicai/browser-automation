@@ -21,31 +21,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
       - name: Set up Python
-        run: uv python install 3.12
-
-      # ponytail: cache the uv venv + managed Python so repeat runs are
-      # fast. Cache key includes uv.lock so a deps bump invalidates.
-      - name: Cache uv
-        uses: actions/cache@v4
+        uses: actions/setup-python@v5
         with:
-          path: |
-            .venv
-            ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-          restore-keys: |
-            uv-${{ runner.os }}-
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements-dev.txt
 
+      # ponytail: pip + requirements*.txt instead of uv because the root
+      # pyproject.toml + uv.lock aren't tracked yet — only the
+      # requirements files are. uv searches for pyproject.toml at the
+      # workspace root and fails the job before pytest ever runs.
+      # Switch back to `uv sync --group dev` once the root pyproject is
+      # committed to main.
       - name: Install dependencies
-        working-directory: ${{ github.workspace }}
-        run: uv sync --group dev
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
 
+      # ponytail: services/brotto-orchestrator/src is the only thing on
+      # PYTHONPATH that makes `brotto_orchestrator` importable. The old
+      # Dockerfile already used this env var.
       - name: Run tests
         working-directory: ${{ github.workspace }}
-        run: uv run pytest services/brotto-orchestrator/tests -v --tb=short
+        env:
+          PYTHONPATH: ${{ github.workspace }}/services/brotto-orchestrator/src
+        run: |
+          pytest services/brotto-orchestrator/tests -v --tb=short
 
   # ─── Extension: type-check + bundle ────────────────────────────────
   build-extension:
