@@ -273,9 +273,6 @@ async function ensureConnected() {
   plannerUrlEl.value = url;
   const response = await fetch(url + '/health', { method: 'GET' });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const info = await response.json();
-  const modelNameEl = document.getElementById('modelName');
-  if (modelNameEl) modelNameEl.textContent = (info.model || '').replace(/^claude-/, '') || info.family || '—';
   setPhase('connected', null);
   appendMessage({ role: 'system', text: `Connected to planner at ${url}` });
 }
@@ -328,13 +325,6 @@ function setPhase(phase, message) {
   }
   // ponytail: status pill is visible in the header. Updates text + color
   // class so the user can read connection state at a glance (Idle by default).
-  const modelDisplay = document.getElementById('modelDisplay');
-  const online = ['connected', 'executing', 'paused', 'done', 'reconnecting'].includes(phase);
-  if (modelDisplay) modelDisplay.classList.toggle('online', online);
-  if (!online) {
-    const modelNameEl = document.getElementById('modelName');
-    if (modelNameEl && !state.plannerUrl) modelNameEl.textContent = 'Not connected';
-  }
   if (connectBtn) connectBtn.disabled = phase === 'connecting' || phase === 'connected' || phase === 'executing';
   if (disconnectBtn) disconnectBtn.disabled = !(phase === 'connected' || phase === 'executing' || phase === 'paused');
   if (startBtn) startBtn.disabled = phase === 'connecting';
@@ -403,9 +393,9 @@ function clearMessages() {
     empty.id = 'emptyState';
     empty.className = 'empty-state';
     empty.innerHTML =
-      '<div class="empty-logo">B</div>' +
+      '<div class="empty-mark"><svg class="brand-mark brand-mark--lg" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/><path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/></svg></div>' +
       '<div class="empty-title">Brotto</div>' +
-      '<div class="empty-sub">Describe what you\'d like to do and Brotto will help you get it done in the browser.</div>';
+      '<div class="empty-sub">Describe what you\'d like to do in your browser and Brotto will get it done for you.</div>';
     messagesEl.appendChild(empty);
   }
 }
@@ -420,14 +410,10 @@ async function connect() {
     const info = await response.json();
     state.plannerUrl = url;
     plannerUrlEl.value = url;
-    const modelNameEl = document.getElementById("modelName");
-    if (modelNameEl) modelNameEl.textContent = (info.model || '').replace(/^claude-/, '') || info.family || '—';
     setPhase('connected', null);
     appendMessage({ role: 'system', text: `Connected to planner at ${url}` });
   } catch (err) {
     state.plannerUrl = '';
-    const modelNameEl = document.getElementById("modelName");
-    if (modelNameEl) modelNameEl.textContent = 'Not connected';
     setPhase('error', `Connect failed: ${err instanceof Error ? err.message : String(err)}`);
     appendMessage({ role: 'error', text: `Connect failed: ${err instanceof Error ? err.message : String(err)}` });
   }
@@ -542,9 +528,9 @@ function createEmptyState() {
   const div = document.createElement('div');
   div.className = 'empty-state';
   div.innerHTML = `
-    <div class="empty-logo">B</div>
+    <div class="empty-mark"><svg class="brand-mark brand-mark--lg" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/><path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/></svg></div>
     <div class="empty-title">Brotto</div>
-    <div class="empty-sub">Describe what you'd like to do and Brotto will help you get it done in the browser.</div>
+    <div class="empty-sub">Describe what you'd like to do in your browser and Brotto will get it done for you.</div>
   `;
   return div;
 }
@@ -1255,21 +1241,14 @@ chrome.runtime.onMessage.addListener((message) => {
 setPhase('idle', 'Ready');
 goalEl.focus();
 
-// Auto-probe health on open — sets green dot + model name if server is up.
+// Auto-probe health on open — marks the planner as reachable if the server responds.
 (async () => {
   const url = plannerUrlEl.value.trim() || 'http://localhost:8000';
   try {
     const res = await fetch(url + '/health', { method: 'GET' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const info = await res.json();
-    const modelNameEl = document.getElementById('modelName');
-    if (modelNameEl) modelNameEl.textContent = (info.model || '').replace(/^claude-/, '') || '—';
     state.plannerUrl = url;
-    const modelDisplay = document.getElementById('modelDisplay');
-    if (modelDisplay) modelDisplay.classList.add('online');
   } catch {
-    // Server not reachable — stay red, label stays 'Not connected'
-    const modelNameEl = document.getElementById('modelName');
-    if (modelNameEl) modelNameEl.textContent = 'Not connected';
+    // Server not reachable — leave state.plannerUrl unset so the UI shows idle.
   }
 })();
