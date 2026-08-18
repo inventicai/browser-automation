@@ -104,6 +104,14 @@ async def run_task(
             ws_send=ws_send,
         )
 
+        # Pre-seed the human-input queue for tasks that require approval.
+        # Without this the harness stalls on the first critical action and
+        # the runner's outer timeout fires. The check passes iff the
+        # agent sent `approval_required` before reading the sentinel.
+        if spec.requires_approval:
+            for _ in range(max(spec.max_steps, 1)):
+                deps.human_input_queue.put_nowait("yes")
+
         try:
             task_result = await asyncio.wait_for(
                 AgentHarness().run(deps),
