@@ -20,7 +20,19 @@ from collections import defaultdict
 from pathlib import Path
 
 from .runner import DEFAULT_RESULTS_PATH, run_task
-from .tasks import LOGIN_HTML, make_login_form_task
+from .tasks import (
+    APPROVAL_HTML,
+    DATA_HTML,
+    FORM_HTML,
+    LANDING_HTML,
+    LOGIN_HTML,
+    RECOVERY_HTML,
+    make_approval_gate_task,
+    make_data_extract_task,
+    make_error_recovery_task,
+    make_login_form_task,
+    make_multi_step_task,
+)
 
 
 log = logging.getLogger("brotto.bench.cli")
@@ -29,6 +41,10 @@ log = logging.getLogger("brotto.bench.cli")
 # Each task is a (factory, sandbox_html) tuple. New tasks added here.
 TASK_REGISTRY: dict[str, tuple] = {
     "login_form": (make_login_form_task, LOGIN_HTML),
+    "data_extract": (make_data_extract_task, DATA_HTML),
+    "multi_step": (make_multi_step_task, LANDING_HTML),
+    "error_recovery": (make_error_recovery_task, RECOVERY_HTML),
+    "approval_gate": (make_approval_gate_task, APPROVAL_HTML),
 }
 
 
