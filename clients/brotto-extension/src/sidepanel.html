@@ -469,6 +469,15 @@
       from { opacity: 0; transform: translateY(8px); }
       to   { opacity: 1; transform: translateY(0); }
     }
+    /* ponytail: smooth fade-out when a message is removed mid-flight
+       (e.g. login bubble disappears after Continue click). 180ms is
+       short enough to feel instant, long enough to avoid flicker. */
+    @keyframes msg-leave {
+      from { opacity: 1; transform: translateY(0); max-height: 200px; margin-bottom: 6px; }
+      to   { opacity: 0; transform: translateY(-4px); max-height: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+    }
+    .message.removing,
+    .login-continue-btn.removing { animation: msg-leave 0.18s ease forwards; }
 
     .message.user      { align-self: flex-end; }
     .message.assistant { align-self: flex-start; }
@@ -494,6 +503,51 @@
       box-shadow: var(--shadow-sm);
       border: 1px solid var(--border-soft);
       border-bottom-left-radius: var(--radius-sm);
+    }
+
+    /* ponytail: transient bubble for login_required. Visually distinct
+       from a regular assistant bubble (amber tint, dashed border) so the
+       user reads it as a temporary status, not a permanent message. The
+       "Waiting" badge with a slow pulse reinforces that the agent is
+       paused and waiting on the human. Removed smoothly on resolve. */
+    .message.login-required-msg .bubble {
+      background: var(--amber-soft);
+      color: var(--amber);
+      border: 1px dashed rgba(217, 119, 6, 0.45);
+      border-bottom-left-radius: var(--radius);
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .login-required-badge {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--amber);
+    }
+    .login-required-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--amber);
+      animation: login-pulse 1.6s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes login-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.35; transform: scale(0.75); }
+    }
+    .login-required-body {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text);
     }
 
     /* ─── Step bubble (with collapsible details) ──────────────────────── */

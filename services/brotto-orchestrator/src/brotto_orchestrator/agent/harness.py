@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from typing import Callable, Coroutine, Any
 
@@ -15,13 +16,26 @@ from .context import AgentDeps, AgentDecision, AgentTurn, StepSummary, TaskResul
 from .ax_filter import filter_ax_targets
 from .ax_diff import compute_ax_diff
 from .stagnation import check_stagnation
-from .guardrails import check_login_page, check_critical_action, wait_for_redirect
+from .guardrails import check_login_page, check_critical_action
 from .prompt import SYSTEM_PROMPT
 from .run_logger import RunLogger
 
 _HISTORY_WINDOW = 12  # keep first 3 + last 9 steps in prompt
 
 log = logging.getLogger("brotto.harness")
+
+# Component-timing buckets. Each step records how long each phase took.
+# Reported at task end so we can see where wall time actually goes.
+TIMING_BUCKETS = (
+    "observe",          # CDP observation round-trip (get_targets/url/title)
+    "filter",           # AX filter + diff computation
+    "login_pause",      # ws_send(login_required) + queue wait for resume
+    "stagnation",       # stagnation check
+    "model_plan",       # agent.run — the LLM call
+    "approval_pause",   # ws_send(approval_required) + queue wait
+    "execute",          # _execute_decision (CDP action + post-obs)
+    "ws_send_progress", # step_progress notification
+)
 
 _MODEL = os.getenv("AGENT_MODEL", "claude-haiku-4-5-20251001")
 
@@ -193,6 +207,14 @@ class AgentHarness:
     STAGNATION_WINDOW = 3
 
     async def run(self, deps: AgentDeps) -> TaskResult:
+        timings: dict[str, float] = {b: 0.0 for b in TIMING_BUCKETS}
+        # Snapshot of `timings` taken at the start of each step iteration —
+        # lets us report a per-step breakdown without instrumenting every
+        # early-exit (continue) site in the loop.
+        cumulative_snapshots: list[dict[str, float]] = []
+        steps_run = 0
+        task_start = time.perf_counter()
+
         if not await deps.cdp.ping():
             return TaskResult(
                 status="failed",
@@ -212,32 +234,57 @@ class AgentHarness:
         for step in range(self.MAX_STEPS):
             deps.step_number = step
             log.info("[%s] === step %d ===", deps.user_id, step)
+            steps_run += 1
+            cumulative_snapshots.append(dict(timings))
 
             # Observe
+            t0 = time.perf_counter()
             targets = await deps.cdp.get_targets()
             current_url = await deps.cdp.get_current_url()
             page_title = await deps.cdp.get_page_title()
+            t1 = time.perf_counter()
+            timings["observe"] += t1 - t0
+
             filtered_ax = filter_ax_targets(targets)
             ax_diff = compute_ax_diff(deps.prev_targets, targets)
+            timings["filter"] += time.perf_counter() - t1
 
             # Guardrail: login detection
             if check_login_page(page_title, filtered_ax, current_url):
+                t_lp = time.perf_counter()
                 await deps.ws_send({
                     "type": "login_required",
-                    "message": f"Please log in: {page_title}. Agent will continue after redirect.",
+                    "message": f"Please log in: {page_title}. Agent will continue when ready.",
                 })
                 try:
-                    new_url = await wait_for_redirect(deps.cdp.get_current_url, current_url)
-                    await deps.ws_send({"type": "agent_continuing", "url": new_url})
-                except TimeoutError:
+                    reply = await asyncio.wait_for(
+                        deps.human_input_queue.get(), timeout=300,
+                    )
+                except asyncio.TimeoutError:
                     await deps.ws_send({"type": "login_timeout"})
+                    timings["login_pause"] += time.perf_counter() - t_lp
+                    continue
+                if str(reply).lower() == "skip":
+                    timings["login_pause"] += time.perf_counter() - t_lp
+                    timing_report = self._log_timings(deps.user_id, timings, steps_run, time.perf_counter() - task_start, cumulative_snapshots)
+                    return TaskResult(
+                        status="failed",
+                        summary="User skipped login",
+                        failure_reason="user_skipped_login",
+                        timing=timing_report,
+                    )
+                # reply == "resume" (or anything else): loop continues,
+                # next step re-runs check_login_page to confirm we're out.
+                timings["login_pause"] += time.perf_counter() - t_lp
                 continue
 
             # Stagnation check
+            t_sg = time.perf_counter()
             stagnated, reason = check_stagnation(deps.step_summaries, self.STAGNATION_WINDOW)
             if stagnated:
                 log.warning("[%s] stagnation detected: %s", deps.user_id, reason)
                 await deps.ws_send({"type": "stagnation_warning", "reason": reason})
+            timings["stagnation"] += time.perf_counter() - t_sg
             stagnation_note = (
                 f"\n\n⚠ STAGNATION DETECTED: {reason}\nYou MUST either try a completely different approach or call cannot_complete now."
                 if stagnated else ""
@@ -263,9 +310,11 @@ class AgentHarness:
             log.info("[%s] step %d  url=%s  ax_elements=%d", deps.user_id, step, current_url[:80], len(targets))
 
             # Plan
+            t_plan = time.perf_counter()
             log.debug("[%s] calling model...", deps.user_id)
             result = await agent.run(_turn_to_prompt(turn), deps=deps)
             decision: AgentDecision = result.output
+            timings["model_plan"] += time.perf_counter() - t_plan
             log.info("[%s] step %d  decision=%s  args=%s", deps.user_id, step, decision.action, str(decision.action_args)[:120])
 
             # Update scratchpad if agent requested it via the field
@@ -273,7 +322,10 @@ class AgentHarness:
                 deps.scratchpad = deps.scratchpad.update(decision.scratchpad_update)
 
             # Guardrail: critical action approval
+            t_ap = time.perf_counter()
+            approval_triggered = False
             if check_critical_action(decision.action, decision.action_args):
+                approval_triggered = True
                 await deps.ws_send({
                     "type": "approval_required",
                     "action": decision.action,
@@ -287,9 +339,12 @@ class AgentHarness:
                         action_taken=f"[BLOCKED] {decision.action}",
                         outcome="User denied approval",
                     ))
+                    timings["approval_pause"] += time.perf_counter() - t_ap
                     continue
+            timings["approval_pause"] += time.perf_counter() - t_ap
 
             # Stream progress — send thought (user-facing), not reasoning (internal)
+            t_ws = time.perf_counter()
             action_target = decision.action_args.get("url") if decision.action == "navigate" else None
             await deps.ws_send({
                 "type": "step_progress",
@@ -299,9 +354,12 @@ class AgentHarness:
                 "url": current_url,
                 "action_target": action_target,
             })
+            timings["ws_send_progress"] += time.perf_counter() - t_ws
 
             # Execute
+            t_ex = time.perf_counter()
             outcome = await _execute_decision(decision, deps)
+            timings["execute"] += time.perf_counter() - t_ex
 
             # Save targets for next-step diff
             deps.prev_targets = targets
@@ -331,11 +389,69 @@ class AgentHarness:
 
             # Terminal?
             if deps.result is not None:
+                deps.result.timing = self._log_timings(
+                    deps.user_id, timings, steps_run, time.perf_counter() - task_start, cumulative_snapshots,
+                )
                 return deps.result
 
+        timing_report = self._log_timings(
+            deps.user_id, timings, steps_run, time.perf_counter() - task_start, cumulative_snapshots,
+        )
         return TaskResult(
             status="failed",
             summary="Max steps reached",
             failure_reason="max_steps_exceeded",
             steps_taken=self.MAX_STEPS,
+            timing=timing_report,
         )
+
+    @staticmethod
+    def _log_timings(
+        user_id: str,
+        timings: dict[str, float],
+        steps: int,
+        wall: float,
+        snapshots: list[dict[str, float]] | None = None,
+    ) -> dict:
+        """Emit a per-component timing summary at task end.
+
+        Returns the dict so the caller can attach it to TaskResult.timing
+        (which flows to the side panel via WS task_result).
+
+        Output line shape:
+          [brotto.harness] TIMING  user=local  steps=3  wall=5.42s  observe=0.31 ...
+        """
+        parts = "  ".join(f"{k}={timings[k]:.2f}" for k in TIMING_BUCKETS)
+        accounted = sum(timings.values())
+        residual = wall - accounted
+        log.info(
+            "[%s] TIMING  steps=%d  wall=%.2fs  accounted=%.2fs  residual=%.2fs  %s",
+            user_id, steps, wall, accounted, residual, parts,
+        )
+
+        # Per-step breakdown: diff consecutive snapshots taken at the top of
+        # each step iteration. Step N's wall = timings[snap_N+1] - timings[snap_N].
+        per_step: list[dict[str, float]] = []
+        if snapshots:
+            for i in range(len(snapshots) - 1):
+                delta = {
+                    k: round(snapshots[i + 1][k] - snapshots[i][k], 3)
+                    for k in TIMING_BUCKETS
+                }
+                per_step.append(delta)
+            # The final step may have in-flight increments not yet snapshotted
+            # if the task ended mid-iteration (e.g. terminal task_complete).
+            if len(snapshots) <= steps:
+                delta = {
+                    k: round(timings[k] - snapshots[-1][k], 3)
+                    for k in TIMING_BUCKETS
+                }
+                per_step.append(delta)
+
+        return {
+            "steps": steps,
+            "wall_s": round(wall, 3),
+            "components": {k: round(timings[k], 3) for k in TIMING_BUCKETS},
+            "residual_s": round(residual, 3),
+            "per_step": per_step,
+        }

@@ -54,6 +54,7 @@ class TaskResult(BaseModel):
     steps_taken: int = 0
     failure_reason: str | None = None
     tried: list[str] = field(default_factory=list)
+    timing: dict | None = None  # per-component seconds + wall clock, set by harness
 
 
 @dataclass

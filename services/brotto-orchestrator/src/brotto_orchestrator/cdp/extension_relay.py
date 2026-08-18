@@ -89,12 +89,27 @@ class ExtensionCDPRelay:
         log.info("[%s] get_targets → %d targets", self._sid, len(targets))
         return targets
 
+    async def _ensure_fresh_obs(self) -> None:
+        """Drain any pending observation pushed by the SW (webNavigation
+        or tabs.onUpdated) into the cache. Does NOT request a new
+        observation — that's _get_observation's job. Keeps get_current_url
+        / get_page_title cheap while still reflecting state changes that
+        arrived between agent steps."""
+        if self._cached_obs is not None and self._obs_queue.empty():
+            return
+        try:
+            self._cached_obs = await asyncio.wait_for(self._obs_queue.get(), timeout=0.5)
+        except asyncio.TimeoutError:
+            pass
+
     async def get_current_url(self) -> str:
+        await self._ensure_fresh_obs()
         url = (self._cached_obs or {}).get("url", "")
         log.debug("[%s] get_current_url → %s", self._sid, url)
         return url
 
     async def get_page_title(self) -> str:
+        await self._ensure_fresh_obs()
         title = (self._cached_obs or {}).get("title", "")
         log.debug("[%s] get_page_title → %r", self._sid, title)
         return title

@@ -51,3 +51,6 @@ logs/
 services/brotto-orchestrator/dist/
 services/brotto-orchestrator/node_modules/
 .turbo/
+
+# CRX signing — local-only, regenerate per developer.
+clients/brotto-extension/crx-signing.pem

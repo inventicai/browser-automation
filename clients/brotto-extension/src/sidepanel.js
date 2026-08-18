@@ -321,7 +321,10 @@ function setPhase(phase, message) {
   // error. The actual message is rendered by the task_failed handler.
   if (phase === 'done' || phase === 'error') {
     stopTimer();
-    document.querySelectorAll(".login-continue-btn").forEach((el) => el.remove());
+    // ponytail: clear any lingering login prompt so the bubble + button
+    // don't survive into the terminal state. (Auto-resume paths also call
+    // clearLoginPrompt directly, so it's idempotent.)
+    clearLoginPrompt();
   }
   // ponytail: status pill is visible in the header. Updates text + color
   // class so the user can read connection state at a glance (Idle by default).
@@ -522,6 +525,21 @@ function clearMessages() {
 
 function appendEmptyState() {
   messagesEl.appendChild(createEmptyState());
+}
+
+// ponytail: helper to fade out + remove the login_required bubble and
+// its Continue button in one render frame. Called on resolve paths: the
+// Continue button click, the next step_card after auto-resume, any
+// agent input request (clarify / approval), and terminal events (done /
+// error / fail). The fade matches the CSS .removing keyframe (180ms);
+// DOM removal happens 20ms later so the fade isn't cut short.
+function clearLoginPrompt() {
+  const els = document.querySelectorAll('.login-required-msg, .login-continue-btn');
+  if (els.length === 0) return;
+  els.forEach((el) => el.classList.add('removing'));
+  setTimeout(() => {
+    els.forEach((el) => { if (el.isConnected) el.remove(); });
+  }, 200);
 }
 
 function createEmptyState() {
@@ -1048,6 +1066,11 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 
     case 'step_card': {
+      // ponytail: any new step implies login was resolved (the loop only
+      // emits step_progress after the human_input_queue unblocks). Fade
+      // the bubble + button out before rendering the new step so the
+      // user sees a continuous flow, not two bubbles stacked.
+      clearLoginPrompt();
       state.stepCount = Math.max(state.stepCount, message.index !== undefined ? message.index + 1 : state.stepCount + 1);
       updateStepCount();
       const icon = iconFor(message.iconKind || '');
@@ -1084,27 +1107,43 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'login_required':
       setPhase('paused', `Login required at ${message.domain || 'site'}`);
-      appendMessage({
-        role: 'assistant',
-        text: `Login required on ${message.domain || 'this site'}. Sign in manually in the browser tab — the task will resume automatically once the post-login page loads. Click Continue only if the auto-resume doesn't fire.`,
-      });
-      // ponytail: safety-net Continue button. The primary resume path is
+      // ponytail: dedupe via clearLoginPrompt so the old bubble + button
+      // fade out instead of being yanked from the layout (which causes a
+      // visible jump when the next bubble appears).
+      clearLoginPrompt();
+      const domain = message.domain || 'this site';
+      const loginMsg = document.createElement('div');
+      loginMsg.className = 'message assistant login-required-msg';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      const badge = document.createElement('div');
+      badge.className = 'login-required-badge';
+      badge.textContent = `Waiting for sign-in · ${domain}`;
+      const body = document.createElement('div');
+      body.className = 'login-required-body';
+      body.textContent = 'Sign in manually in the browser tab. The task resumes automatically once the post-login page loads. Use Continue only if auto-resume does not fire.';
+      bubble.appendChild(badge);
+      bubble.appendChild(body);
+      loginMsg.appendChild(bubble);
+      messagesEl.appendChild(loginMsg);
+      // ponytail: safety-net Continue button. Primary resume path is
       // webNavigation.onCommitted firing off the login domain, but that
       // misses some SPAs and OAuth callback flows. The button is a manual
-      // override — clicking it sends local_login_complete, which resolves
-      // the loop's pending login pause. Cleaned up on the next task start
-      // and on terminal phase transitions.
+      // override — clicking it fades both bubble + button out and signals
+      // resume to the loop. Cleaned up automatically on next step / task
+      // end so it never lingers into the next task.
       const continueBtn = document.createElement('button');
       continueBtn.type = 'button';
       continueBtn.className = 'login-continue-btn';
       continueBtn.textContent = 'Continue';
       continueBtn.addEventListener('click', () => {
         continueBtn.disabled = true;
-        // ponytail: use the callback form so chrome.runtime.lastError is
-        // synchronously checked — the no-callback form logs "Unchecked
-        // runtime.lastError: Could not establish connection" to the
-        // extension console when the SW is gone (after a long pause
-        // between tasks).
+        // ponytail: clearLoginPrompt runs in the same render frame as the
+        // click, so the bubble + button fade out together. The local_login_complete
+        // signal goes out in parallel — the loop unblocks as soon as the
+        // SW relays the human_reply, and the next step_card will arrive
+        // immediately after with no gap.
+        clearLoginPrompt();
         try {
           chrome.runtime.sendMessage({ type: 'local_login_complete' }, () => {
             void chrome.runtime.lastError;
@@ -1116,6 +1155,9 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'task_completed':
+      // ponytail: clear any lingering login prompt — task is ending, no
+      // point leaving the user looking at a "Waiting for sign-in" bubble.
+      clearLoginPrompt();
       stopTimer();
       setPhase('done', message.summary ? message.summary.slice(0, 60) : 'Task complete');
       state.stepCount = message.steps || state.stepCount;
@@ -1132,6 +1174,13 @@ chrome.runtime.onMessage.addListener((message) => {
           .join(' | ');
         if (facts) messageText += `\n\n${facts}`;
       }
+      if (message.timing && message.timing.components) {
+        const c = message.timing.components;
+        const ms = (s) => `${(s * 1000).toFixed(0)}ms`;
+        messageText += `\n\nTiming (${message.timing.steps} steps, ${message.timing.wall_s.toFixed(1)}s wall): ` +
+          `observe=${ms(c.observe)}  plan=${ms(c.model_plan)}  exec=${ms(c.execute)}  ` +
+          `login=${ms(c.login_pause)}  other=${ms((c.filter ?? 0) + (c.stagnation ?? 0) + (c.approval_pause ?? 0) + (c.ws_send_progress ?? 0))}`;
+      }
       appendMessage({
         role: 'done',
         text: messageText,
@@ -1140,6 +1189,10 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'task_failed':
+      // ponytail: same as task_completed — clean up login prompt on any
+      // terminal event so the user never sees a stale "Waiting" bubble
+      // after the task has failed / been cancelled.
+      clearLoginPrompt();
       stopTimer();
       setPhase('error', message.message || 'Task failed');
       appendMessage({
@@ -1149,6 +1202,11 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'clarify_request': {
+      // ponytail: login wall was cleared (otherwise the loop couldn't
+      // have produced a clarifying question). Fade bubble + button out
+      // before the new clarify card appears so the transition reads as
+      // a single flow, not two stacked bubbles.
+      clearLoginPrompt();
       setPhase('paused', 'Clarifying question from agent');
       appendClarifyCard({
         id: message.id,
@@ -1159,6 +1217,10 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 
     case 'approval_request': {
+      // ponytail: same as clarify — login resolved before an approval
+      // request could fire. Fade login prompt out so the approval card
+      // is the only new element on screen.
+      clearLoginPrompt();
       setPhase('paused', 'Agent wants approval for a critical action');
       const a = message.action || {};
       const preview = a.url ? `${a.type ?? 'action'} → ${a.url}` : (a.type ?? 'action');
@@ -1172,6 +1234,8 @@ chrome.runtime.onMessage.addListener((message) => {
 
     // ── Canonical events ─────────────────────────────────────────────────
     case 'canonical_step': {
+      // ponytail: any canonical step past a login wall clears the prompt.
+      clearLoginPrompt();
       const icon = message.kind === 'action' ? '&#9654;' : message.kind === 'observation' ? '&#128065;' : '&#10003;';
       const titleText = (message.reasoning && message.reasoning.trim())
         || deriveReasoningFromAction(message.summary || '', message.kind)
@@ -1184,6 +1248,8 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'canonical_approval': {
       const req = message.request || {};
+      // ponytail: same as approval_request — login must be resolved.
+      clearLoginPrompt();
       setPhase('paused', 'Agent is requesting approval');
       appendApprovalCard({
         id: req.actionId || 'unknown',
@@ -1194,6 +1260,9 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 
     case 'canonical_terminal': {
+      // ponytail: terminal event from the canonical stream — clean up
+      // any login prompt so it doesn't survive past the task ending.
+      clearLoginPrompt();
       stopTimer();
       const m = message.message || {};
       if (m.type === 'task.completed') {
