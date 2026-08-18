@@ -109,6 +109,7 @@ async def test_harness_completes_with_test_model():
         TestModel(
             custom_output_args={
                 "reasoning": "Page loaded successfully",
+                "thought": "Page loaded",
                 "action": "task_complete",
                 "action_args": {"summary": "Page loaded", "extracted_data": None},
                 "scratchpad_update": None,

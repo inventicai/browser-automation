@@ -21,8 +21,16 @@ _CRITICAL_RE = [re.compile(p, re.I) for p in CRITICAL_PATTERNS]
 
 
 def check_login_page(page_title: str, ax_tree: str, url: str) -> bool:
-    # Only check title + URL — AX tree of any authenticated page contains "sign in" in menus
-    combined = f"{page_title} {url}"
+    """Detect a login page from title, AX tree, and URL.
+
+    Searches across all three. The pattern list is biased toward
+    strong markers (password, username, authenticate, sso, oauth)
+    rather than the ambiguous "sign in" which can appear in menus
+    of authenticated pages. The caller passes the *filtered* AX tree
+    produced by `ax_filter.filter_ax_targets`, which already drops
+    noise.
+    """
+    combined = f"{page_title} {ax_tree} {url}"
     return any(r.search(combined) for r in _LOGIN_RE)
 
 
