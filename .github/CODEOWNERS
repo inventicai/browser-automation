@@ -1,0 +1,7 @@
+# CODEOWNERS — auto-assigns reviewers on every PR.
+#
+# Format: <pattern> <owner>  (one owner per line, last match wins)
+# Owners can be @username or @org/team-name.
+
+# Default owner for the whole repo
+@suryanshgupta99933
