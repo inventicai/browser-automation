@@ -21,6 +21,7 @@ from .cdp.relay import CDPRelay
 from .cdp.extension_relay import ExtensionCDPRelay
 from .cdp.watchdog import CDPWatchdog
 from .session.auth import validate_token
+from .session.observation_validator import validate_observation
 from .session.registry import SessionRegistry
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,10 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
 
     obs_queue: asyncio.Queue = asyncio.Queue()
     human_queue: asyncio.Queue = asyncio.Queue()
+    # D9: the per-session tracker is held by the registry, so a
+    # reconnect with the same session_id resumes dedup correctly.
+    in_seq_tracker = registry.get_or_create_in_seq(session_id)
+    legacy_warned = False
 
     async def ws_send(msg: dict) -> None:
         msg_type = msg.get("type", "?")
@@ -154,6 +159,23 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
                 incoming = json.loads(raw)
                 t = incoming.get("type")
+
+                # D9 — validate observation sequence tracking before
+                # enqueueing. Duplicates are dropped here so the agent
+                # loop never sees them.
+                decision = validate_observation(
+                    incoming, in_seq_tracker, is_legacy_warned=legacy_warned,
+                )
+                if not decision.accept:
+                    if decision.reason == "legacy_no_seq":
+                        legacy_warned = True
+                    else:
+                        log.debug(
+                            "[%s] dropped %s  seq=%s  reason=%s",
+                            session_id, t, incoming.get("seq"), decision.reason,
+                        )
+                        continue
+
                 if t == "observation":
                     n = len(incoming.get("axTargets", []))
                     log.debug(
