@@ -17,7 +17,9 @@ import json
 import logging
 import sys
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from .runner import DEFAULT_RESULTS_PATH, run_task
 from .tasks import (
@@ -48,32 +50,29 @@ TASK_REGISTRY: dict[str, tuple] = {
 }
 
 
-def _build_task_urls(names: list[str]) -> dict[str, str]:
-    """Spin up a sandbox for each task and return {name: url}."""
+@contextmanager
+def task_urls(names: list[str]) -> Iterator[dict[str, str]]:
+    """Spin up a sandbox for each task and yield {name: url}.
+
+    Guarantees every sandbox is closed on exit, even if the caller raises.
+    """
     from .sandbox.server import sandbox as _base_sandbox
 
     urls: dict[str, str] = {}
     contexts = []
-    for name in names:
-        _factory, html = TASK_REGISTRY[name]
-        ctx = _base_sandbox(html)
-        contexts.append(ctx)
-        url = ctx.__enter__()
-        urls[name] = url
-    # Stash the contexts so the caller can close them later.
-    _build_task_urls._contexts = contexts  # type: ignore[attr-defined]
-    return urls
-
-
-def _teardown_task_urls() -> None:
-    """Close all sandboxes that _build_task_urls opened."""
-    contexts = getattr(_build_task_urls, "_contexts", [])
-    for ctx in contexts:
-        try:
-            ctx.__exit__(None, None, None)
-        except Exception:
-            pass
-    _build_task_urls._contexts = []  # type: ignore[attr-defined]
+    try:
+        for name in names:
+            _factory, html = TASK_REGISTRY[name]
+            ctx = _base_sandbox(html)
+            contexts.append(ctx)
+            urls[name] = ctx.__enter__()
+        yield urls
+    finally:
+        for ctx in reversed(contexts):
+            try:
+                ctx.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 async def _run_one(task_name: str, model: str, results_path: Path, url: str):
@@ -85,8 +84,7 @@ async def _run_one(task_name: str, model: str, results_path: Path, url: str):
 async def _run_suite(model: str, results_path: Path) -> list:
     """Run every registered task against the same model."""
     names = list(TASK_REGISTRY.keys())
-    urls = _build_task_urls(names)
-    try:
+    with task_urls(names) as urls:
         out = []
         for name in names:
             log.info("running %s on %s", name, model)
@@ -97,8 +95,6 @@ async def _run_suite(model: str, results_path: Path) -> list:
                 name, result.ok, result.steps, result.elapsed_ms,
             )
         return out
-    finally:
-        _teardown_task_urls()
 
 
 def _write_card(results_path: Path, card_path: Path) -> None:
@@ -180,11 +176,8 @@ def main() -> int:
     else:
         if args.task not in TASK_REGISTRY:
             raise SystemExit(f"unknown task {args.task!r}; available: {list(TASK_REGISTRY)}")
-        urls = _build_task_urls([args.task])
-        try:
+        with task_urls([args.task]) as urls:
             results = [asyncio.run(_run_one(args.task, args.model, args.results, urls[args.task]))]
-        finally:
-            _teardown_task_urls()
 
     failed = [r for r in results if not r.ok]
     if failed:

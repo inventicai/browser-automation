@@ -132,6 +132,167 @@ async def test_harness_completes_with_test_model():
         harness_mod.agent = original_agent
 
 
+@pytest.mark.asyncio
+async def test_harness_blocks_on_approval_when_queue_is_empty():
+    """Diagnose the approval_gate stall.
+
+    When the agent emits a critical action, the harness sends
+    `approval_required` and then `await human_input_queue.get()` with
+    no timeout. With an empty queue the run stalls; the benchmark
+    runner's outer wait_for(timeout=120) is what surfaces this as a
+    timeout error. Confirms the runner must pre-seed the queue for
+    `requires_approval` tasks.
+    """
+    from pydantic_ai.models.test import TestModel
+    from brotto_orchestrator.agent.harness import AgentHarness
+    import brotto_orchestrator.agent.harness as harness_mod
+    from brotto_orchestrator.agent.context import AgentDeps, AgentDecision
+    from brotto_orchestrator.dev.ax_tree_extractor import SemanticTarget
+
+    cdp = MagicMock()
+    cdp.ping = AsyncMock(return_value=True)
+    cdp.get_targets = AsyncMock(
+        return_value=[SemanticTarget(ref_id="btn_del", tag="button", role="button", name="Delete account")]
+    )
+    cdp.get_current_url = AsyncMock(return_value="http://example.com/account")
+    cdp.get_page_title = AsyncMock(return_value="Account")
+    cdp.refresh_target_map = AsyncMock()
+    cdp.click_ref = AsyncMock(return_value="clicked")
+    cdp.get_targets_after = cdp.get_targets
+
+    messages: list[dict] = []
+    q: asyncio.Queue = asyncio.Queue()  # intentionally empty
+
+    async def ws_send(msg):
+        messages.append(msg)
+
+    deps = AgentDeps(
+        user_id="test",
+        task="delete the account, ask first",
+        cdp=cdp,
+        ws_send=ws_send,
+        human_input_queue=q,
+    )
+
+    test_agent = harness_mod.agent.__class__(
+        TestModel(
+            custom_output_args={
+                "reasoning": "destructive action",
+                "thought": "clicking delete",
+                "action": "click",
+                "action_args": {"ref": "btn_del", "description": "delete account"},
+                "scratchpad_update": None,
+            },
+        ),
+        output_type=AgentDecision,
+        deps_type=AgentDeps,
+        system_prompt=harness_mod.SYSTEM_PROMPT,
+    )
+    original = harness_mod.agent
+    harness_mod.agent = test_agent
+    try:
+        h = AgentHarness()
+        # short timeout proves the stall — no sentinel = blocks forever
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(h.run(deps), timeout=0.5)
+        # The approval_required frame DID go out before the stall.
+        assert any(m.get("type") == "approval_required" for m in messages), (
+            "harness should have sent approval_required before blocking on the queue"
+        )
+    finally:
+        harness_mod.agent = original
+
+
+@pytest.mark.asyncio
+async def test_harness_unblocks_when_approval_sentinel_is_queued():
+    """End-to-end: a sentinel 'yes' on the queue unblocks the harness
+    and lets the run complete normally. This is what the benchmark
+    runner must do for tasks with `requires_approval=True`.
+    """
+    from pydantic_ai.models.test import TestModel
+    from brotto_orchestrator.agent.harness import AgentHarness
+    import brotto_orchestrator.agent.harness as harness_mod
+    from brotto_orchestrator.agent.context import AgentDeps, AgentDecision
+    from brotto_orchestrator.dev.ax_tree_extractor import SemanticTarget
+
+    cdp = MagicMock()
+    cdp.ping = AsyncMock(return_value=True)
+    cdp.get_targets = AsyncMock(
+        return_value=[SemanticTarget(ref_id="btn_del", tag="button", role="button", name="Delete account")]
+    )
+    cdp.get_current_url = AsyncMock(return_value="http://example.com/account")
+    cdp.get_page_title = AsyncMock(return_value="Account")
+    cdp.refresh_target_map = AsyncMock()
+    cdp.click_ref = AsyncMock(return_value="clicked")
+
+    messages: list[dict] = []
+    q: asyncio.Queue = asyncio.Queue()
+    # Pre-seed the approval reply BEFORE the harness runs — same pattern
+    # the benchmark runner should use for requires_approval tasks.
+    # TestModel re-emits the same critical action every step, so we need
+    # a sentinel ready for each iteration (capped by max_steps=4).
+    for _ in range(4):
+        q.put_nowait("yes")
+
+    async def ws_send(msg):
+        messages.append(msg)
+
+    deps = AgentDeps(
+        user_id="test",
+        task="delete the account, ask first",
+        cdp=cdp,
+        ws_send=ws_send,
+        human_input_queue=q,
+    )
+
+    test_agent = harness_mod.agent.__class__(
+        TestModel(
+            custom_output_args={
+                "reasoning": "destructive action",
+                "thought": "clicking delete",
+                "action": "click",
+                "action_args": {"ref": "btn_del", "description": "delete account"},
+                "scratchpad_update": None,
+            },
+        ),
+        output_type=AgentDecision,
+        deps_type=AgentDeps,
+        system_prompt=harness_mod.SYSTEM_PROMPT,
+    )
+    original = harness_mod.agent
+    harness_mod.agent = test_agent
+    try:
+        h = AgentHarness()
+        # Run in the background; we only need to assert the harness
+        # progressed PAST the approval gate (click ran) without stalling.
+        # We don't drive the full 30-step loop — TestModel re-emits the
+        # same click until stagnation or max_steps, which isn't what
+        # we're testing here.
+        run_task = asyncio.create_task(h.run(deps))
+
+        # Wait for the first approval_required frame, then for the
+        # subsequent step_progress (proves the click executed).
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while asyncio.get_event_loop().time() < deadline:
+            if any(m.get("type") == "step_progress" for m in messages):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            run_task.cancel()
+            raise AssertionError("harness stalled — no step_progress after approval sentinel")
+
+        # Approval frame went out and the click ran through the gate.
+        assert any(m.get("type") == "approval_required" for m in messages)
+
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    finally:
+        harness_mod.agent = original
+
+
 if __name__ == "__main__":
     # Quick self-check without pytest
     asyncio.run(test_harness_completes_with_test_model())
