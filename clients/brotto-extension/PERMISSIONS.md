@@ -7,9 +7,9 @@ This document provides detailed justification for each permission requested by t
 | Permission | Justification | Risk Level |
 |------------|---------------|------------|
 | `debugger` | Core automation capability | High |
-| `activeTab` | User-initiated tab access | Low |
 | `tabs` | Tab listing for selection | Low |
-| `tabGroups` | Tab group management | Medium |
+| `storage` | Persist local settings (server URL) | Low |
+| `sidePanel` | Render the side panel UI | Low |
 | `<all_urls>` | Access any user-selected website | High |
 
 ---
@@ -56,30 +56,6 @@ Without this permission, the extension cannot:
 
 ---
 
-## activeTab
-
-### Purpose
-Allows the extension to access the currently active tab when the user invokes the extension.
-
-### Why It's Required
-When the user clicks the extension icon, the extension needs to:
-- Display the popup UI
-- Potentially communicate with the active tab
-- Initiate the tab selection process
-
-### How It's Used
-- When popup opens, it queries the active tab
-- The activeTab permission grants temporary access to that tab
-- Access is automatically revoked when the user navigates away
-
-### Security Controls
-- Only activates on **explicit user action** (clicking extension icon)
-- Does not grant background tab access
-- Automatically scoped to the single active tab
-- Does not persist beyond the interaction
-
----
-
 ## tabs
 
 ### Purpose
@@ -95,9 +71,10 @@ The tab selection dialog needs to display:
 Without this permission, users cannot see which tabs are available to automate.
 
 ### How It's Used
-- `chrome.tabs.query({})` to list all tabs
-- Results filtered to exclude system tabs (chrome://, etc.)
-- Only displays metadata, does not access tab content
+- `chrome.tabs.query({ active: true, currentWindow: true })` to find the active tab
+- `chrome.tabs.create({ url })` to open a starting tab if the user did not pick one
+- `chrome.tabs.get(tabId)` to look up the tab we have attached to
+- `chrome.tabs.onCreated` / `chrome.tabs.onRemoved` to keep the side panel's tab bar in sync
 
 ### Data Accessed
 - `tab.title` - Display name
@@ -109,30 +86,56 @@ Without this permission, users cannot see which tabs are available to automate.
 ### Security Controls
 - Only metadata, not page content
 - System tabs automatically excluded
-- No ability to modify tabs
+- `chrome.tabs.update` / `chrome.tabs.remove` are not called
 
 ---
 
-## tabGroups
+## storage
 
 ### Purpose
-Allows the extension to work with Chrome tab groups.
+Persists a small bag of local settings (today: the server URL and any future
+user toggles) in `chrome.storage.local`.
 
 ### Why It's Required
-Users may organize tabs into groups. This permission enables:
-- Displaying tab groups in selection dialog
-- Group-based automation (one group per session)
-- Managing group associations during automation
+The extension needs to remember the orchestrator URL between browser
+restarts so the user does not have to re-enter it on every reload.
 
 ### How It's Used
-- `chrome.tabGroups.query({})` to list groups
-- Group information displayed in tab selector
-- Automation attaches to the first tab in selected group
+- `chrome.storage.local.get('settings')` to read the saved server URL
+- `chrome.storage.local.set({ settings })` to persist it
+
+### Data Accessed
+- One key: `settings`. Stores `{ serverUrl: string }` and a small allow-list
+  of feature flags.
 
 ### Security Controls
-- Only works with user-created groups
-- No ability to create/modify/delete groups
-- Single group per automation session (architecture requirement)
+- `chrome.storage.local` only — never `chrome.storage.sync`. Nothing leaves
+  the user's machine through this API.
+- No PII, no credentials, no automation history.
+
+---
+
+## sidePanel
+
+### Purpose
+Lets the extension open its own side panel when the user clicks the toolbar
+icon, and route messages between the service worker and the side panel.
+
+### Why It's Required
+The side panel is the orchestrator's UI surface — chat, plan, approval,
+clarify, status. Without this permission the user would have to open a
+separate tab to see what the agent is doing.
+
+### How It's Used
+- `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })` once
+  at startup so clicking the toolbar icon opens the panel
+- `chrome.runtime.sendMessage` from the service worker to push events
+  (`step_card`, `task_completed`, `approval_request`, etc.) to the side panel
+
+### Security Controls
+- Side panel content is loaded from the extension's own bundle, not from any
+  web origin. No third-party scripts.
+- No `chrome.sidePanel.setOptions` calls — the panel is a fixed surface.
 
 ---
 
@@ -178,7 +181,7 @@ The extension warns users before attaching to:
 ```
 User Action                    Extension Behavior
 ---------                       ----------------
-1. Click icon                  -> Opens popup (activeTab)
+1. Click icon                  -> Opens side panel (sidePanel)
 2. Click "Start Automation"     -> Lists tabs (tabs)
 3. Select tab                  -> Checks security (tabs, debugger)
 4. Confirm                     -> Attaches debugger (debugger)

@@ -16,7 +16,7 @@ The full set is also recorded in `services/brotto-orchestrator/uv.lock`.
 | pydantic | 2.0 | MIT | Data models / validation |
 | pydantic-ai | 0.0.1 | MIT | Agent framework (model-agnostic) |
 | aiohttp | 3.9.0 | Apache-2.0 | Async HTTP client |
-| anthropic | 0.21.0 | MIT | Anthropic API client (default model provider) |
+| anthropic | 0.21.0 | MIT | LLM provider SDK |
 | python-dotenv | 1.0.0 | BSD-3-Clause | `.env` loading |
 | playwright | 1.40.0 | Apache-2.0 | Dev-mode browser automation / CDP access |
 | pytest | 7.0 | MIT | Test runner |
@@ -37,10 +37,7 @@ Pinned in `clients/brotto-extension/package.json` and locked in
 
 ## Model
 
-Brotto uses pydantic-ai to drive an external LLM. The default model is
-`claude-haiku-4-5-20251001` from Anthropic, configurable via the
-`AGENT_MODEL` environment variable. No model weights are bundled with this
-repository.
+The agent layer is model-agnostic (D6). The active model is configured at runtime via the `AGENT_MODEL` environment variable; no model id is hardcoded in source. See `CONTRIBUTING.md` → Repository Hygiene — Model Neutrality and `decisions.md` → D6. No model weights are bundled with this repository.
 
 ## License Compatibility
 

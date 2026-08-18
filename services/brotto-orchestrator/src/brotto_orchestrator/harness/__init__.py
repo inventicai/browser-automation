@@ -1,5 +1,6 @@
-"""Agent harness: observe→plan→act loop implementation."""
+"""Agent harness package.
 
-from .agent_loop import AgentLoop, LoopResult, LoopState
-
-__all__ = ["AgentLoop", "LoopResult", "LoopState"]
+The supported loop is `AgentHarness` in `brotto_orchestrator.agent.harness`.
+Do not reintroduce alternate loops here — the architecture is single-loop
+by design (D3: synchronous, single-threaded agent loop per session).
+"""

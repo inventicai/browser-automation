@@ -17,7 +17,7 @@ from brotto_orchestrator.domain.models import ActionResult, SessionDeps
 class BrowserInterface(ABC):
     """Abstract browser interface for dev and extension modes.
 
-    Allows AgentLoop to work with any browser backend.
+    Allows AgentHarness to work with any browser backend.
     """
 
     @abstractmethod

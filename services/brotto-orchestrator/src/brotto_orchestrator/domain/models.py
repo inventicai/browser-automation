@@ -17,18 +17,3 @@ class SessionDeps:
     session_id: str
     sink: Any = None  # WebSocket or callable for sending messages
     history: list[str] = field(default_factory=list)
-
-
-@dataclass
-class PlanningInput:
-    session_id: str
-    goal: str
-    observation: dict[str, Any]
-    history: list[dict[str, Any]]
-    memory: dict[str, Any]
-
-
-@dataclass
-class PlanningOutcome:
-    action: dict[str, Any]
-    usage: dict[str, Any] = field(default_factory=dict)

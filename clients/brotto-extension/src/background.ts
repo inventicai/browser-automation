@@ -23,13 +23,65 @@ let ws: WebSocket | null = null;
 let activeTabId: number | null = null;
 let tabStack: number[] = []; // opener history for back-navigation
 let sessionId: string | null = null;
+let serverUrl: string = DEFAULT_SERVER;
 let taskTerminalEmitted = false;
 let stepIndex = 0;
+
+// Pause state — persists across SW restarts via chrome.storage.session so a
+// quiet login page doesn't lose the "we're waiting for the user" signal.
+let waitingForLogin = false;
+let currentPrompt: "login" | "approval" | "clarify" | null = null;
+let lastObservedUrl = "";
 
 const pendingClarifyResolvers  = new Map<string, (answer: string) => void>();
 const pendingApprovalResolvers = new Map<string, (approved: boolean) => void>();
 let reqCounter = 0;
 function newId(prefix: string) { return `${prefix}-${Date.now().toString(36)}-${++reqCounter}`; }
+
+// ── Session persistence (survives SW suspension/restart) ────────────────────
+
+async function persistSession(): Promise<void> {
+  await chrome.storage.session.set({
+    sessionId,
+    activeTabId,
+    serverUrl,
+    waitingForLogin,
+    currentPrompt,
+    lastObservedUrl,
+  });
+}
+
+async function restoreSession(): Promise<void> {
+  const s = await chrome.storage.session.get([
+    "sessionId", "activeTabId", "serverUrl", "waitingForLogin", "currentPrompt", "lastObservedUrl",
+  ]);
+  if (typeof s.sessionId === "string") sessionId = s.sessionId;
+  if (typeof s.activeTabId === "number") activeTabId = s.activeTabId;
+  if (typeof s.serverUrl === "string") serverUrl = s.serverUrl;
+  if (typeof s.waitingForLogin === "boolean") waitingForLogin = s.waitingForLogin;
+  if (s.currentPrompt === "login" || s.currentPrompt === "approval" || s.currentPrompt === "clarify") {
+    currentPrompt = s.currentPrompt;
+  }
+  if (typeof s.lastObservedUrl === "string") lastObservedUrl = s.lastObservedUrl;
+}
+
+async function clearSession(): Promise<void> {
+  await chrome.storage.session.clear();
+  sessionId = null;
+  activeTabId = null;
+  waitingForLogin = false;
+  currentPrompt = null;
+  lastObservedUrl = "";
+}
+
+// Send the user's reply for whichever prompt is current and clear the wait.
+function signalResume(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "human_reply", content: "resume" }));
+  waitingForLogin = false;
+  currentPrompt = null;
+  void persistSession();
+}
 
 // ── AX tree capture ─────────────────────────────────────────────────────────
 
@@ -158,6 +210,10 @@ async function sendObservation(tabId: number): Promise<void> {
   try {
     const obs = await captureObservation(tabId);
     ws.send(JSON.stringify({ type: "observation", ...obs }));
+    if (typeof obs.url === "string" && obs.url !== lastObservedUrl) {
+      lastObservedUrl = obs.url;
+      void persistSession();
+    }
     // Keep tab bar in sync with every navigation within the active tab
     notifyUi({ type: "tab_event", event: { kind: "navigated", tabId, url: obs.url, title: obs.title } });
   } catch (e) {
@@ -167,7 +223,8 @@ async function sendObservation(tabId: number): Promise<void> {
 
 // ── Main relay ───────────────────────────────────────────────────────────────
 
-async function startRelay(goal: string, serverUrl: string, startingUrl?: string): Promise<void> {
+async function startRelay(goal: string, plannerUrl: string, startingUrl?: string): Promise<void> {
+  serverUrl = plannerUrl;
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const activeTab = tabs[0];
 
@@ -188,6 +245,7 @@ async function startRelay(goal: string, serverUrl: string, startingUrl?: string)
   activeTabId = tab.id;
   tabStack    = [];
   stepIndex   = 0;
+  void persistSession();
 
   // Re-query to get live title — the tab object from create/query may be stale
   const liveTab = await chrome.tabs.get(tab.id);
@@ -257,10 +315,10 @@ async function startRelay(goal: string, serverUrl: string, startingUrl?: string)
         void setBadge(false);
         const r = msg.result ?? {};
         if (r.status === "completed") {
-          notifyUi({ type: "task_completed", summary: r.summary ?? "", steps: stepIndex, finalAnswer: r.summary ?? "", extracted_data: r.extracted_data });
+          notifyUi({ type: "task_completed", summary: r.summary ?? "", steps: stepIndex, finalAnswer: r.summary ?? "", extracted_data: r.extracted_data, timing: r.timing ?? null });
           notifyUi({ type: "canonical_status", status: "completed" });
         } else {
-          notifyUi({ type: "task_failed", code: r.failure_reason ?? r.status ?? "failed", message: r.summary ?? "Task failed" });
+          notifyUi({ type: "task_failed", code: r.failure_reason ?? r.status ?? "failed", message: r.summary ?? "Task failed", timing: r.timing ?? null });
           notifyUi({ type: "canonical_status", status: "failed" });
         }
         break;
@@ -278,7 +336,11 @@ async function startRelay(goal: string, serverUrl: string, startingUrl?: string)
         const id = newId("clarify");
         pendingClarifyResolvers.set(id, (answer) => {
           ws?.send(JSON.stringify({ type: "human_reply", content: answer }));
+          currentPrompt = null;
+          void persistSession();
         });
+        currentPrompt = "clarify";
+        void persistSession();
         notifyUi({ type: "clarify_request", id, question: msg.question ?? "", reason: "" });
         break;
       }
@@ -287,7 +349,11 @@ async function startRelay(goal: string, serverUrl: string, startingUrl?: string)
         const id = newId("approval");
         pendingApprovalResolvers.set(id, (approved) => {
           ws?.send(JSON.stringify({ type: "human_reply", content: approved ? "yes" : "no" }));
+          currentPrompt = null;
+          void persistSession();
         });
+        currentPrompt = "approval";
+        void persistSession();
         notifyUi({
           type: "approval_request", id,
           reason: msg.reasoning ?? "The agent wants to perform a sensitive action.",
@@ -299,6 +365,9 @@ async function startRelay(goal: string, serverUrl: string, startingUrl?: string)
       case "login_required": {
         let domain = "";
         try { domain = new URL(msg.message ?? "").hostname; } catch { domain = "this site"; }
+        waitingForLogin = true;
+        currentPrompt = "login";
+        void persistSession();
         notifyUi({ type: "login_required", url: msg.message ?? "", domain });
         break;
       }
@@ -340,8 +409,12 @@ async function cleanup(): Promise<void> {
   tabStack = [];
   ws = null;
   sessionId = null;
+  waitingForLogin = false;
+  currentPrompt = null;
+  lastObservedUrl = "";
   if (tid !== null) void dbg.detachFromTab(tid).catch(() => undefined);
   void setBadge(false);
+  void chrome.storage.session.clear();
 }
 
 function stopRelay(): void {
@@ -350,7 +423,10 @@ function stopRelay(): void {
   ws = null;
   const tid = activeTabId;
   activeTabId = null;
+  waitingForLogin = false;
+  currentPrompt = null;
   if (tid !== null) void dbg.detachFromTab(tid).catch(() => undefined);
+  void chrome.storage.session.clear();
 }
 
 // ── Message handler ──────────────────────────────────────────────────────────
@@ -368,12 +444,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           taskTerminalEmitted = false;
           pendingClarifyResolvers.clear();
           pendingApprovalResolvers.clear();
+          waitingForLogin = false;
+          currentPrompt = null;
+          lastObservedUrl = "";
 
           const goal = String(message.task ?? "").trim();
           if (!goal) { sendResponse({ success: false, error: "task is empty" }); return; }
 
           const stored = await chrome.storage.local.get("settings");
-          const serverUrl: string =
+          const plannerUrl: string =
             (message.plannerUrl as string | undefined) ||
             (stored.settings as any)?.serverUrl ||
             DEFAULT_SERVER;
@@ -381,7 +460,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           void setBadge(true);
           notifyUi({ type: "canonical_status", status: "executing" });
 
-          startRelay(goal, serverUrl, message.startingUrl as string | undefined)
+          startRelay(goal, plannerUrl, message.startingUrl as string | undefined)
             .catch((err: unknown) => {
               void setBadge(false);
               if (!taskTerminalEmitted) {
@@ -404,7 +483,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
 
         case "local_login_complete": {
-          if (activeTabId !== null) void sendObservation(activeTabId);
+          // Manual override for the login pause. The server's harness is
+          // blocked on human_input_queue; we push "resume" to unblock it.
+          // The next step then re-runs check_login_page on the server.
+          signalResume();
           sendResponse({ success: true });
           break;
         }
@@ -490,15 +572,48 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
+// Auto-resume after manual login: when the active tab's URL actually
+// changes (top-frame navigation or pushState / title-only update), unblock
+// the server's human_input_queue with "resume". The server then re-runs
+// check_login_page — if we're still on a login wall, it re-prompts; else
+// the agent proceeds. Gate on URL change so SPA title flicker / form
+// mutations don't spuriously resume.
+chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
+  if (activeTabId === null || _tabId !== activeTabId) return;
+  if (!waitingForLogin) return;
+  const newUrl = change.url ?? tab.url ?? "";
+  if (newUrl && newUrl !== lastObservedUrl) {
+    signalResume();
+  }
+});
+
 // ── Initialise ───────────────────────────────────────────────────────────────
 
 async function initialize(): Promise<void> {
+  // Restore any in-flight pause state from the previous SW lifetime.
+  await restoreSession();
+
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== "brotto-sidepanel") return;
     port.onMessage.addListener(() => { /* keep-alive */ });
   });
 
   chrome.runtime.onInstalled.addListener(() => { void setBadge(false); });
+
+  // Auto-resume after manual login: when the active tab navigates, push a
+  // fresh observation AND unblock the server's login wait. Top-frame only —
+  // iframes would fire too and add noise.
+  if (chrome.webNavigation?.onCommitted) {
+    chrome.webNavigation.onCommitted.addListener((details) => {
+      if (details.frameId !== 0) return;
+      if (activeTabId === null || details.tabId !== activeTabId) return;
+      void sendObservation(details.tabId);
+      const url = details.url ?? "";
+      if (waitingForLogin && url && url !== lastObservedUrl) {
+        signalResume();
+      }
+    });
+  }
 
   try {
     if (chrome.sidePanel?.setPanelBehavior) {

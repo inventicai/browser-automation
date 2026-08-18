@@ -28,8 +28,7 @@
     "debugger",
     "tabs",
     "storage",
-    "sidePanel",
-    "webNavigation"
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
