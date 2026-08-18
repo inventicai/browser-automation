@@ -37,14 +37,16 @@ TIMING_BUCKETS = (
     "ws_send_progress", # step_progress notification
 )
 
-_MODEL = os.getenv("AGENT_MODEL", "claude-haiku-4-5-20251001")
+_MODEL = os.getenv("AGENT_MODEL", "no-model")
 
 
 def _build_agent() -> Agent[AgentDeps, AgentDecision]:
-    provider = "anthropic" if "claude" in _MODEL.lower() else "openai"
-    model_str = f"{provider}:{_MODEL}"
+    # Pass the raw model id; pydantic-ai auto-detects the provider from the
+    # model name. Operators who want explicit routing can set
+    # AGENT_MODEL="<provider>:<model>" (e.g. "anthropic:claude-3-5-sonnet").
+    # This file names no vendor.
     return Agent(
-        model_str,
+        _MODEL,
         output_type=AgentDecision,
         deps_type=AgentDeps,
         system_prompt=SYSTEM_PROMPT,

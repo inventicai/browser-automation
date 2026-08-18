@@ -151,30 +151,37 @@ OBSERVATION:
 
 ## D6: Agent Framework: PydanticAI
 
-**Decision**: Use PydanticAI with Anthropic API (Claude Haiku 4.5 by default).
+**Decision**: Use PydanticAI as the agent layer. The model is configured at runtime via the `AGENT_MODEL` environment variable; no model id is hardcoded in source (see Repository Hygiene — Model Neutrality in `CONTRIBUTING.md`).
 
 **Rationale**:
-- Strong on browser tasks (Claude trained on web data)
-- Structured output (BrowserAction discriminated union)
-- Tool support via PydanticAI
-- Model-agnostic (supports OpenAI, Azure, local models)
-- Proven in production (Anthropic uses it)
+- Strong structured-output support (action discriminated union)
+- Tool / capability abstractions over the agent loop
+- Model-agnostic by construction — provider-pluggable; the public source names no specific model id
+- Composable with the harness loop without hand-rolled wiring
 
 **Not**: LangChain, LlamaIndex, or custom loops.
 
-**Configuration**:
+**Configuration** (illustrative):
 ```python
-model = AnthropicModel(model_name="claude-haiku-4-5", api_key=api_key)
+import os
+from pydantic_ai import Agent
+
+# Provider-pluggable: see pydantic_ai.models for the full list.
+# Model name and credentials come from env — nothing is hardcoded.
+model = provider_model_for(
+    model_name=os.environ["AGENT_MODEL"],
+    api_key=os.environ["PROVIDER_API_KEY"],
+)
 agent = Agent(
-  model=model,
-  output_type=BrowserAction,
-  instructions=compose_system_prompt(),
-  tools=[...],
-  capabilities=[PolicyHooks(...), ApprovalCapability(...), HistoryCapability(...)]
+    model=model,
+    output_type=BrowserAction,
+    instructions=compose_system_prompt(),
+    tools=[...],
+    capabilities=[PolicyHooks(...), ApprovalCapability(...), HistoryCapability(...)]
 )
 ```
 
-**Status**: Locked. No model swapping without explicit reason.
+**Status**: Locked. The harness raises if `AGENT_MODEL` is unset (`services/brotto-orchestrator/src/brotto_orchestrator/agent/harness.py`); to rotate or add a model, change env / secrets, not source.
 
 ---
 

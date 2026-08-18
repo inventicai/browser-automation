@@ -140,9 +140,9 @@ function renderMarkdown(raw) {
   return s;
 }
 
-// ponytail: if the model skipped `reasoning` (gpt-4o-mini occasionally drops
-// optional fields), derive a sentence from the raw action string the local
-// driver produced. Keeps the bubble readable even when the model is lazy.
+// ponytail: if the model skipped `reasoning`, derive a sentence from the raw
+// action string the local driver produced. Keeps the bubble readable even
+// when the model is lazy.
 function deriveReasoningFromAction(title, iconKind) {
   const t = (title || '').trim();
   if (!t) return iconKind ? `Working (${iconKind})…` : 'Working on it…';
