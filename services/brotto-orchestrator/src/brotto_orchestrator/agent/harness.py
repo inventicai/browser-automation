@@ -14,8 +14,8 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import UserError
 
 from .context import (
-    AgentDeps, AgentDecision, AgentTurn, ActionCall, ReadEntry,
-    StepSummary, TaskResult, Scratchpad, MAX_RECENT_READS,
+    AgentDeps, AgentDecision, AgentTurn, ActionCall,
+    StepSummary, TaskResult, Scratchpad, MemoryEntry, DIGEST_LEN,
 )
 from .ax_filter import filter_ax_targets
 from .ax_diff import compute_ax_diff
@@ -26,9 +26,12 @@ from .run_logger import RunLogger
 
 _HISTORY_WINDOW = 12  # keep first 3 + last 9 steps in prompt
 
-# Actions that mutate scratchpad. The orchestrator emits one step_progress
-# per non-internal action; these are silent (no UI bubble).
-_INTERNAL_ACTIONS = {"write_scratchpad", "append_scratchpad", "read_scratchpad"}
+# Actions that don't fire a UI bubble. Scratchpad mutations and recall are
+# metadata — the user sees the thought, not the write/recall itself.
+_INTERNAL_ACTIONS = {
+    "write_scratchpad", "append_scratchpad", "read_scratchpad",
+    "recall_memory",
+}
 # Actions that short-circuit the rest of the multi-action list.
 _TERMINAL_ACTIONS = {"task_complete", "cannot_complete"}
 
@@ -88,23 +91,25 @@ def _turn_to_prompt(turn: AgentTurn) -> str:
 
     diff_section = f"\n### What changed after last action\n{turn.ax_diff}\n" if turn.ax_diff else ""
 
-    read_section = ""
-    if turn.recent_reads:
-        blocks = []
-        for r in turn.recent_reads:
-            truncation = " [truncated]" if r.was_truncated else ""
-            blocks.append(f"Step {r.step} | selector={r.selector!r}{truncation}\n{r.text}")
-        read_section = (
-            f"\n### Page text read this session (last {len(turn.recent_reads)} of {MAX_RECENT_READS})\n"
-            + "\n---\n".join(blocks)
-            + "\n"
-        )
+    # Memory manifest: small per-entry digest. Full bodies are loaded on
+    # demand via recall_memory(id). This is the "skills" pattern — the
+    # agent sees the description (digest) for free, fetches full content
+    # only when it actually needs it.
+    manifest_lines = ["### Memory manifest (recall_memory(id) fetches full body)"]
+    for e in turn.scratchpad_entries:
+        around = f" around={e.around!r}" if e.around else ""
+        trunc = " [truncated]" if e.was_truncated else ""
+        manifest_lines.append(f"- `{e.id}` step={e.step} sel={e.selector}{around}{trunc}: {e.digest}")
+    manifest_section = "\n".join(manifest_lines) + "\n"
 
     return f"""## Task
 {turn.task}
 
-## Your scratchpad
-{turn.scratchpad or "(empty — write important things here to keep notes across steps)"}
+## Your memory (notes)
+{turn.scratchpad_notes or "(empty — append_scratchpad(line) to add your own findings here)"}
+
+## Memory manifest (auto-captured reads)
+{manifest_section}
 
 ## Steps completed
 {history}
@@ -112,7 +117,7 @@ def _turn_to_prompt(turn: AgentTurn) -> str:
 ## Current page (step {turn.step_number})
 URL: {turn.current_url}
 Title: {turn.current_page_title}
-{diff_section}{read_section}
+{diff_section}
 ### AX Tree (interactive elements only)
 {turn.ax_tree}
 
@@ -161,19 +166,26 @@ async def _execute_action(call: ActionCall, deps: AgentDeps) -> str:
             # bigger than we saw. The agent can use this to decide whether
             # to read again with `around` set.
             was_truncated = len(text) >= max_chars - 16
-            deps.recent_reads.append(ReadEntry(
+            # Auto-capture: every read lands in memory. Zero tokens. The
+            # agent sees the manifest in the next step's prompt and can
+            # recall this entry's full body via recall_memory(id).
+            entry_id = f"r{len(deps.scratchpad.entries) + 1}"
+            digest_body = text[:DIGEST_LEN]
+            digest = digest_body + ("…" if len(text) > DIGEST_LEN else "")
+            deps.scratchpad = deps.scratchpad.with_entry(MemoryEntry(
+                id=entry_id,
                 step=deps.step_number,
                 selector=selector,
-                text=text,
+                around=around,
+                digest=digest,
+                body=text,
                 was_truncated=was_truncated,
             ))
-            if len(deps.recent_reads) > MAX_RECENT_READS:
-                deps.recent_reads = deps.recent_reads[-MAX_RECENT_READS:]
-            preview = text[:120] if text else "(empty)"
             around_note = f" around={around!r}" if around else ""
             return (
                 f"read_page_text({selector!r}{around_note}, max_chars={max_chars}) "
-                f"→ {len(text)} chars. Content shown in next step context."
+                f"→ {len(text)} chars. Auto-captured as {entry_id} in memory. "
+                f"Use recall_memory('{entry_id}') for full body."
             )
 
         elif action == "find_element":
@@ -200,15 +212,35 @@ async def _execute_action(call: ActionCall, deps: AgentDeps) -> str:
             return f"Element matching '{desc}' not found in {len(targets)} targets"
 
         elif action == "append_scratchpad":
-            deps.scratchpad = deps.scratchpad.append(args.get("line", ""))
-            return "Scratchpad appended"
+            deps.scratchpad = deps.scratchpad.append_note(args.get("line", ""))
+            return "Memory note appended"
 
         elif action == "write_scratchpad":
-            deps.scratchpad = deps.scratchpad.update(args.get("content", ""))
-            return "Scratchpad updated"
+            deps.scratchpad = deps.scratchpad.write_notes(args.get("content", ""))
+            return "Memory notes rewritten"
 
         elif action == "read_scratchpad":
-            return deps.scratchpad.content or "(empty)"
+            # Returns the manifest + notes as a single blob so the agent
+            # can see everything in one call. (recall_memory is the
+            # token-efficient path — call this only when you need a
+            # full dump.)
+            lines = []
+            if deps.scratchpad.entries:
+                lines.append("### Memory manifest")
+                for e in deps.scratchpad.entries:
+                    lines.append(f"- `{e.id}` step={e.step}: {e.digest}")
+            if deps.scratchpad.notes:
+                lines.append("### Notes")
+                lines.append(deps.scratchpad.notes)
+            return "\n".join(lines) or "(empty)"
+
+        elif action == "recall_memory":
+            entry_id = args.get("entry_id", "")
+            entry = deps.scratchpad.lookup(entry_id)
+            if entry is None:
+                available = [e.id for e in deps.scratchpad.entries]
+                return f"Memory entry {entry_id!r} not found. Available: {available}"
+            return entry.body
 
         elif action == "task_complete":
             deps.result = TaskResult(
@@ -266,10 +298,12 @@ class AgentHarness:
             deps.task_id = str(uuid.uuid4())
         run_log = RunLogger(deps.task_id)
 
-        # Restore scratchpad if this task was previously interrupted
-        saved = run_log.load_scratchpad()
-        if saved:
-            deps.scratchpad = deps.scratchpad.update(saved)
+        # Restore scratchpad if this task was previously interrupted.
+        # load_scratchpad returns a structured Scratchpad (entries + notes).
+        # Legacy plain-text files (no # MEMORY v2 header) parse as notes-only.
+        loaded = run_log.load_scratchpad()
+        if loaded.entries or loaded.notes:
+            deps.scratchpad = loaded
 
         for step in range(self.MAX_STEPS):
             deps.step_number = step
@@ -334,17 +368,17 @@ class AgentHarness:
             turn = AgentTurn(
                 task=deps.task,
                 step_number=step,
-                scratchpad=deps.scratchpad.content,
+                scratchpad_notes=deps.scratchpad.notes,
+                scratchpad_entries=list(deps.scratchpad.entries),  # manifest snapshot
                 current_url=current_url,
                 current_page_title=page_title,
                 ax_tree=filtered_ax + stagnation_note,
                 ax_diff=ax_diff,
-                recent_reads=list(deps.recent_reads),  # snapshot of FIFO window
                 step_summaries=deps.step_summaries,
             )
 
-            log.info("[%s] step %d  url=%s  ax_elements=%d  recent_reads=%d",
-                     deps.user_id, step, current_url[:80], len(targets), len(turn.recent_reads))
+            log.info("[%s] step %d  url=%s  ax_elements=%d  memory_entries=%d",
+                     deps.user_id, step, current_url[:80], len(targets), len(turn.scratchpad_entries))
 
             # Plan
             t_plan = time.perf_counter()
@@ -449,13 +483,18 @@ class AgentHarness:
             # Save targets for next-step diff
             deps.prev_targets = targets
 
-            # Persist scratchpad iff any scratchpad action ran in this batch.
-            # The file is the source of truth — the side panel is not shown
-            # the scratchpad directly. Operators can inspect
-            # logs/runs/<task_id>/scratchpad.txt to see what memory was built.
-            scratchpad_actions = {"write_scratchpad", "append_scratchpad"}
-            if any(c.action in scratchpad_actions for c in decision.actions):
-                run_log.save_scratchpad(deps.scratchpad.content)
+            # Persist the full structured memory whenever any step touched
+            # it: read_page_text (auto-capture), append_scratchpad /
+            # write_scratchpad (synthesized notes). The file is the
+            # source of truth — operators can inspect
+            # logs/runs/<task_id>/scratchpad.txt to see what memory was
+            # built. Auto-append writes the digest; the full body lives
+            # only in-memory and is lost on restart.
+            memory_actions = {
+                "read_page_text", "write_scratchpad", "append_scratchpad",
+            }
+            if any(c.action in memory_actions for c in decision.actions):
+                run_log.save_scratchpad(deps.scratchpad)
 
             # Log step
             run_log.log_step(
