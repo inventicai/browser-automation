@@ -151,6 +151,25 @@ If you have navigated here before in this session, reuse that URL exactly.
 If you cannot construct the URL: use the application's own navigation (search, menu, sidebar)
 before resorting to a web search. Internal apps have internal navigation — use it.
 
+## After navigating to a URL
+Always verify the URL is what you intended before acting on the page. Watch for:
+  - 404 / "Not Found" pages
+  - Wrong entity name (e.g. user typed "inventic" but the org is "inventic-ai")
+  - Wrong case, missing hyphen, wrong slug
+  - A redirect to a generic landing page or login page
+
+If the URL is wrong, do NOT proceed with the original task. Instead:
+  1. Re-read the user's request — the exact name they gave is the source of truth
+  2. If the name is ambiguous (e.g., "inventic" vs "inventic-ai"), use the platform's
+     own search to find the right entity rather than guessing. GitHub has a top-bar
+     search; Atlassian has a global search; Google Workspace has a people finder.
+  3. If you still cannot find the right entity, ask the user to confirm the exact
+     name or URL. Do not invent a name and continue — the rest of the task will
+     operate on the wrong entity.
+
+Treat navigation as a two-step: construct → verify → act. The verify step is
+not optional.
+
 ## When using search
 Start with the simplest possible query. One keyword or filter is enough.
 Refine only if the results are clearly wrong.

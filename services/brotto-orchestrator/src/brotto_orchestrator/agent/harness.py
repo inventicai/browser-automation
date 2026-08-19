@@ -367,27 +367,37 @@ class AgentHarness:
             actions_summary = ", ".join(f"{c.action}" for c in decision.actions) or "(none)"
             log.info("[%s] step %d  actions=[%s]", deps.user_id, step, actions_summary)
 
-            # Guardrail: critical action approval (check first action only;
-            # the model should split multiple critical actions across steps)
+            # Guardrail: critical action approval (check ALL actions in the
+            # batch — checking only the first was a bypass: `click(delete) +
+            # append_scratchpad` would only see the first critical action,
+            # and if the model put a non-critical action first, critical
+            # actions later in the batch ran unchecked). One approval per
+            # critical action; deny aborts the entire batch.
             t_ap = time.perf_counter()
-            first = decision.actions[0] if decision.actions else None
-            if first and check_critical_action(first.action, first.action_args):
+            critical_actions = [
+                c for c in decision.actions
+                if check_critical_action(c.action, c.action_args)
+            ]
+            blocked = False
+            for c in critical_actions:
                 await deps.ws_send({
                     "type": "approval_required",
-                    "action": first.action,
-                    "args": first.action_args,
+                    "action": c.action,
+                    "args": c.action_args,
                     "reasoning": decision.reasoning,
                 })
                 reply = await deps.human_input_queue.get()
                 if str(reply).lower() not in ("yes", "y", "approve", "ok", "confirm"):
                     deps.step_summaries.append(StepSummary(
                         step=step, url=current_url,
-                        action_taken=f"[BLOCKED] {first.action}",
+                        action_taken=f"[BLOCKED] {c.action}",
                         outcome="User denied approval",
                     ))
-                    timings["approval_pause"] += time.perf_counter() - t_ap
-                    continue
+                    blocked = True
+                    break
             timings["approval_pause"] += time.perf_counter() - t_ap
+            if blocked:
+                continue
 
             # Stream progress — one bubble per non-internal action. Internal
             # actions (scratchpad) are silent; the extension renders each
@@ -412,13 +422,16 @@ class AgentHarness:
             t_ex = time.perf_counter()
             outcomes: list[str] = []
             action_trace: list[str] = []
-            terminal_hit = False
             for call in decision.actions:
                 action_trace.append(f"{call.action}({call.action_args})")
                 outcome = await _execute_action(call, deps)
                 outcomes.append(outcome)
-                if call.action in _TERMINAL_ACTIONS:
-                    terminal_hit = True
+                # Short-circuit the rest of the batch on a terminal action
+                # (task_complete/cannot_complete — sets deps.result) or on
+                # ask_human (pauses for user input; any action after it in
+                # the same batch would run before the user could see the
+                # question, which is the wrong order).
+                if call.action in _TERMINAL_ACTIONS or call.action == "ask_human":
                     break
             timings["execute"] += time.perf_counter() - t_ex
             combined_outcome = "; ".join(outcomes) if outcomes else "no action"
@@ -450,8 +463,10 @@ class AgentHarness:
                 outcome=combined_outcome[:120],
             ))
 
-            # Terminal?
-            if terminal_hit or deps.result is not None:
+            # Terminal? Gate on deps.result, not on the action name. A
+            # terminal action that raises an exception before setting
+            # deps.result should not try to read .timing off a None.
+            if deps.result is not None:
                 deps.result.timing = self._log_timings(
                     deps.user_id, timings, steps_run, time.perf_counter() - task_start, cumulative_snapshots,
                 )

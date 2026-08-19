@@ -164,19 +164,24 @@ class ExtensionCDPRelay:
         - around: optional keyword; the read is centered on the first
           case-insensitive match. Falls back to top of body if no match.
         """
-        sel = selector.replace('"', '\\"')
+        # json.dumps produces a correctly-escaped JS string literal for
+        # backslashes, quotes, newlines, and control chars. Embedding the
+        # escaped form directly into the JS source avoids any string-breakout
+        # for adversarial inputs (e.g. a selector containing `"` or `;`).
+        import json as _json
+        sel_js = _json.dumps(selector)
         if around:
-            around_escaped = around.replace("\\", "\\\\").replace('"', '\\"')
+            around_js = _json.dumps(around)
             half = max_chars // 2
             expr = f"""(() => {{
-              const t = (document.querySelector("{sel}") || document.body).innerText;
-              const i = t.toLowerCase().indexOf("{around_escaped}".toLowerCase());
+              const t = (document.querySelector({sel_js}) || document.body).innerText;
+              const i = t.toLowerCase().indexOf({around_js}.toLowerCase());
               if (i < 0) return t.substring(0, {max_chars});
               const start = Math.max(0, i - {half});
               return t.substring(start, start + {max_chars});
             }})()"""
         else:
-            expr = f'(document.querySelector("{sel}") || document.body).innerText.substring(0, {max_chars})'
+            expr = f'(document.querySelector({sel_js}) || document.body).innerText.substring(0, {max_chars})'
         log.info(
             "[%s] read_page_text  selector=%r  around=%r  max_chars=%d",
             self._sid, selector, around, max_chars,
