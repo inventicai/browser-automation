@@ -439,10 +439,17 @@ class AgentHarness:
             # Save targets for next-step diff
             deps.prev_targets = targets
 
-            # Persist scratchpad iff any scratchpad action ran in this batch
+            # Persist scratchpad iff any scratchpad action ran in this batch.
+            # Also push the new content to the side panel so the user can see
+            # the scratchpad fill in real-time. The extension can opt in to
+            # render this frame; orchestrator-side log already records it.
             scratchpad_actions = {"write_scratchpad", "append_scratchpad"}
             if any(c.action in scratchpad_actions for c in decision.actions):
                 run_log.save_scratchpad(deps.scratchpad.content)
+                await deps.ws_send({
+                    "type": "scratchpad_update",
+                    "content": deps.scratchpad.content,
+                })
 
             # Log step
             run_log.log_step(

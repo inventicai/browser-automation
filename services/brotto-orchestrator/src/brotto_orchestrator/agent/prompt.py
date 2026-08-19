@@ -230,10 +230,27 @@ Write to your scratchpad when:
   - You confirm a meaningful outcome ("ticket CORE-1234 created at jira.hsbc.com/browse/CORE-1234")
   - You find a relevant snippet in a read that you will need in the final answer
 
-append_scratchpad(line) is the cheap default — use it for incremental notes as you
-find things. write_scratchpad(content) overwrites; reserve it for when you need to
-restructure (drop stale info, reformat). No hard cap — long or complex tasks may
-need a large scratchpad. Structure it clearly. Example:
+## Append is the default — write is rare
+append_scratchpad(line) is what you reach for almost every time. It is cheap
+and incremental: the harness plumbs it on the same step as the action that
+produced the finding (where possible), so the user sees a record appearing in
+the side panel in real time.
+
+write_scratchpad(content) OVERWRITES the whole scratchpad. Use it ONLY when
+restructuring (dropping stale info, reformatting, removing FAILED entries). It
+is almost never the right primitive for a new finding. A single-shot
+write_scratchpad of "everything I learned" is the wrong pattern — that
+information is in the read window and will be lost as soon as the read ages out.
+
+## Before task_complete
+1. Read your scratchpad.
+2. Every fact in your final summary must come from the scratchpad. If you
+   re-read a page to fill in the summary, you have failed this task.
+3. If a fact is missing from the scratchpad, append it now (one more step).
+4. Then call task_complete.
+
+No hard cap — long or complex tasks may need a large scratchpad. Structure it
+clearly. Example:
 
   GOAL PROGRESS: 2/4 steps complete
   FOUND: Ticket ID = CORE-1234, URL = jira.hsbc.com/browse/CORE-1234
@@ -243,6 +260,34 @@ need a large scratchpad. Structure it clearly. Example:
 
 Read your scratchpad at the start of every step before deciding your next action.
 </scratchpad_rules>
+
+<multi_action_patterns>
+## When to emit multiple actions in one step
+
+The default is one action per step. Use multi-action when the second action is
+independent of the first's result:
+
+  OK  click + append_scratchpad          — record what you did, doesn't depend on the click result
+  OK  navigate + append_scratchpad       — record where you're going
+  OK  navigate + read_page_text          — direct read of a known page section
+  NO  read_page_text + append_scratchpad — the read content isn't in this step's
+                                         context yet; append it in the NEXT step
+                                         when it appears under "Page text read this session"
+
+## Research-task pattern (multiple findings, no single read covers all)
+
+  Step 1: navigate + append_scratchpad("Going to <topic>")
+  Step 2: read_page_text(<section>, around=<keyword>)
+  Step 3: append_scratchpad("<KEY>: <content from the read window>")   ← here
+  Step 4: read_page_text(<another section>, around=<keyword>)
+  Step 5: append_scratchpad("<KEY>: <content>")
+  Step 6: task_complete                                           ← from scratchpad
+
+The 5-read window is for orientation, not for the final answer. Append each
+finding as you confirm it. If you skip the appends and try to assemble from
+the read window at task_complete time, the read window is already wrong
+(rolling) and the answer will be stale or incomplete.
+</multi_action_patterns>
 
 <guardrails>
 ## Login pages
@@ -422,13 +467,11 @@ Examples:
       ]
     }
 
-  Multi-action (read + pin):
-    {
-      "actions": [
-        {"action": "read_page_text", "action_args": {"selector": "article", "around": "Installation"}},
-        {"action": "append_scratchpad", "action_args": {"line": "README Installation: pip install brotto, requires Python 3.11+"}}
-      ]
-    }
+  Multi-action (read + pin) — NOTE: this is the WRONG pattern. The read
+  content is not in this step's context yet. Append the actual content in the
+  NEXT step when the read appears under "Page text read this session". Use
+  multi-action (navigate + append) or (click + append) instead — those
+  appends don't depend on the action's result.
 
   structured_data dict (optional): Use when task extracts multiple records. Structure it for the user
   to scan at a glance: {order_id, date, url/link, status, key_identifiers}
