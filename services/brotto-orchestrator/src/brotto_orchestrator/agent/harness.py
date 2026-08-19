@@ -11,6 +11,7 @@ from typing import Callable, Coroutine, Any
 import logging
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UserError
 
 from .context import (
     AgentDeps, AgentDecision, AgentTurn, ActionCall, ReadEntry,
@@ -348,8 +349,20 @@ class AgentHarness:
             # Plan
             t_plan = time.perf_counter()
             log.debug("[%s] calling model...", deps.user_id)
-            result = await agent.run(_turn_to_prompt(turn), deps=deps)
-            decision: AgentDecision = result.output
+            try:
+                result = await agent.run(_turn_to_prompt(turn), deps=deps)
+                decision: AgentDecision = result.output
+            except UserError as e:
+                # pydantic-ai auto-detect fails on bare model names that don't
+                # match its known patterns. With defer_model_check=True the
+                # check fires here, not at Agent construction. Re-raise with
+                # a hint that names the fix without hard-coding a model id.
+                if "Unknown model" in str(e):
+                    raise UserError(
+                        f"{e}. Set AGENT_MODEL to '<provider>:<model>' "
+                        f"to route to the correct provider."
+                    ) from e
+                raise
             timings["model_plan"] += time.perf_counter() - t_plan
             actions_summary = ", ".join(f"{c.action}" for c in decision.actions) or "(none)"
             log.info("[%s] step %d  actions=[%s]", deps.user_id, step, actions_summary)
