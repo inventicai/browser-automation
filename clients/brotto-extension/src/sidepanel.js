@@ -169,18 +169,13 @@ function deriveReasoningFromAction(title, iconKind) {
   return t.length > 80 ? `${t.slice(0, 77)}…` : `${t}…`;
 }
 
-// ponytail: render one tool call from the orchestrator's `actions` array
-// into a single line for the details panel. The line is plain text — the
-// details panel is text-only, no markdown. Future: when the tool-call
-// showcase is removed from the side panel entirely, this function is the
-// only thing about the new shape that will stay.
+// ponytail: formatToolCall is no longer used — tool call names are rendered
+// inline in the step_card message handler. Kept as a placeholder if the
+// tooling needs to expand later. The details panel only shows the names
+// (e.g. "navigate, append_scratchpad") when the step had multiple actions.
 function formatToolCall(a) {
   if (!a || typeof a.action !== 'string') return '';
-  const target = a.action_target ? ` → ${a.action_target}` : '';
-  const args = a.args && typeof a.args === 'object' && Object.keys(a.args).length > 0
-    ? ` ${JSON.stringify(a.args)}`
-    : '';
-  return `→ ${a.action}${target}${args}`;
+  return a.action;
 }
 
 // ── SW keep-alive (MV3) ──────────────────────────────────────────────────
@@ -1097,18 +1092,16 @@ chrome.runtime.onMessage.addListener((message) => {
       const bubbleTitle = (message.clientText && message.clientText.trim())
         || (message.reasoning && message.reasoning.trim())
         || deriveReasoningFromAction(message.title || '', message.iconKind);
-      // ponytail: the details panel shows the tool calls. When multi-action,
-      // server ships an `actions` array — one bubble per step, with all
-      // tool calls listed under the toggle. Falls back to the legacy
-      // single-tool-call shape when `actions` is missing.
+      // ponytail: the details panel shows tool call names ONLY when the
+      // step had multiple actions. Single-action steps keep the bubble
+      // content as the only detail (the raw tool call args are hidden —
+      // the user said they don't want to see complete tool calls).
+      // Multi-action steps list the names joined by ", " so the operator
+      // can see at a glance which tools fired in this batch.
       const actions = Array.isArray(message.actions) ? message.actions : [];
-      const stepDetailsLines = actions.length > 0
-        ? actions.map(formatToolCall)
-        : [`${message.title || ''}${message.result ? ' → ' + message.result : ''}`.trim()];
-      if (message.reasoning && message.clientText && message.reasoning.trim() !== message.clientText.trim()) {
-        stepDetailsLines.push(`--- reasoning ---\n${message.reasoning.trim()}`);
-      }
-      const details = stepDetailsLines.filter(Boolean).join('\n');
+      const details = actions.length > 1
+        ? actions.map(a => a.action).filter(Boolean).join(', ')
+        : '';
       // ponytail: each step gets its OWN persistent bubble. clientText is the
       // bubble title; raw tool call + reasoning live behind a "details"
       // toggle so the chat reads naturally and the operator can drill in
