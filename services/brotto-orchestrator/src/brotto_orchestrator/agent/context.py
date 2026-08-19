@@ -15,11 +15,27 @@ class StepSummary(BaseModel):
     extracted: str | None = None
 
 
+class ReadEntry(BaseModel):
+    """One read_page_text result. Last MAX_RECENT_READS are kept in AgentDeps.recent_reads."""
+    step: int
+    selector: str
+    text: str
+    was_truncated: bool
+
+
 class Scratchpad(BaseModel):
+    """Long-term working memory. No hard cap — sized for complex multi-step tasks."""
     content: str = ""
 
     def update(self, new_content: str) -> "Scratchpad":
-        return Scratchpad(content=new_content[:3200])
+        return Scratchpad(content=new_content)
+
+    def append(self, line: str) -> "Scratchpad":
+        if not line:
+            return self
+        if self.content:
+            return Scratchpad(content=(self.content + "\n" + line).strip())
+        return Scratchpad(content=line.strip())
 
 
 class AgentTurn(BaseModel):
@@ -30,21 +46,26 @@ class AgentTurn(BaseModel):
     current_page_title: str
     ax_tree: str
     ax_diff: str
-    last_read_text: str   # result of last read_page_text, empty if none
-    last_read_selector: str
+    recent_reads: list[ReadEntry]  # FIFO window of last MAX_RECENT_READS reads
     step_summaries: list[StepSummary]
 
 
-class AgentDecision(BaseModel):
-    reasoning: str  # internal chain-of-thought — logged only, never shown to user
-    thought: str    # one sentence shown live in the side panel — no internals, no jargon
+class ActionCall(BaseModel):
+    """One action in a multi-action decision. The agent may emit several of
+    these per step (e.g. click + append_scratchpad)."""
     action: Literal[
         "navigate", "click", "type_text", "scroll",
-        "find_element", "read_page_text", "write_scratchpad", "read_scratchpad",
+        "find_element", "read_page_text",
+        "write_scratchpad", "append_scratchpad", "read_scratchpad",
         "task_complete", "cannot_complete", "ask_human",
     ]
     action_args: dict
-    scratchpad_update: str | None = None
+
+
+class AgentDecision(BaseModel):
+    reasoning: str
+    thought: str
+    actions: list[ActionCall]
 
 
 class TaskResult(BaseModel):
@@ -55,6 +76,9 @@ class TaskResult(BaseModel):
     failure_reason: str | None = None
     tried: list[str] = field(default_factory=list)
     timing: dict | None = None  # per-component seconds + wall clock, set by harness
+
+
+MAX_RECENT_READS = 5
 
 
 @dataclass
@@ -70,5 +94,4 @@ class AgentDeps:
     step_number: int = 0
     result: TaskResult | None = None
     prev_targets: list = field(default_factory=list)  # AX targets from previous step for diffing
-    last_read_text: str = ""          # last read_page_text result, shown in next turn
-    last_read_selector: str = ""      # selector used for that read
+    recent_reads: list[ReadEntry] = field(default_factory=list)  # FIFO window, last MAX_RECENT_READS

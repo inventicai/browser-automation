@@ -12,7 +12,10 @@ import logging
 
 from pydantic_ai import Agent
 
-from .context import AgentDeps, AgentDecision, AgentTurn, StepSummary, TaskResult, Scratchpad
+from .context import (
+    AgentDeps, AgentDecision, AgentTurn, ActionCall, ReadEntry,
+    StepSummary, TaskResult, Scratchpad, MAX_RECENT_READS,
+)
 from .ax_filter import filter_ax_targets
 from .ax_diff import compute_ax_diff
 from .stagnation import check_stagnation
@@ -21,6 +24,12 @@ from .prompt import SYSTEM_PROMPT
 from .run_logger import RunLogger
 
 _HISTORY_WINDOW = 12  # keep first 3 + last 9 steps in prompt
+
+# Actions that mutate scratchpad. The orchestrator emits one step_progress
+# per non-internal action; these are silent (no UI bubble).
+_INTERNAL_ACTIONS = {"write_scratchpad", "append_scratchpad", "read_scratchpad"}
+# Actions that short-circuit the rest of the multi-action list.
+_TERMINAL_ACTIONS = {"task_complete", "cannot_complete"}
 
 log = logging.getLogger("brotto.harness")
 
@@ -33,8 +42,8 @@ TIMING_BUCKETS = (
     "stagnation",       # stagnation check
     "model_plan",       # agent.run — the LLM call
     "approval_pause",   # ws_send(approval_required) + queue wait
-    "execute",          # _execute_decision (CDP action + post-obs)
-    "ws_send_progress", # step_progress notification
+    "execute",          # _execute_actions (CDP actions + post-obs)
+    "ws_send_progress", # step_progress notifications
 )
 
 _MODEL = os.getenv("AGENT_MODEL", "no-model")
@@ -77,16 +86,24 @@ def _turn_to_prompt(turn: AgentTurn) -> str:
     history = "\n".join(history_lines) or "(none yet)"
 
     diff_section = f"\n### What changed after last action\n{turn.ax_diff}\n" if turn.ax_diff else ""
-    read_section = (
-        f"\n### Page text read last step (selector: {turn.last_read_selector!r})\n{turn.last_read_text}\n"
-        if turn.last_read_text else ""
-    )
+
+    read_section = ""
+    if turn.recent_reads:
+        blocks = []
+        for r in turn.recent_reads:
+            truncation = " [truncated]" if r.was_truncated else ""
+            blocks.append(f"Step {r.step} | selector={r.selector!r}{truncation}\n{r.text}")
+        read_section = (
+            f"\n### Page text read this session (last {len(turn.recent_reads)} of {MAX_RECENT_READS})\n"
+            + "\n---\n".join(blocks)
+            + "\n"
+        )
 
     return f"""## Task
 {turn.task}
 
 ## Your scratchpad
-{turn.scratchpad or "(empty — write important things here)"}
+{turn.scratchpad or "(empty — write important things here to keep notes across steps)"}
 
 ## Steps completed
 {history}
@@ -98,15 +115,15 @@ Title: {turn.current_page_title}
 ### AX Tree (interactive elements only)
 {turn.ax_tree}
 
-## What is your next action?
+## What is your next action(s)?
 """
 
 
-async def _execute_decision(decision: AgentDecision, deps: AgentDeps) -> str:
-    """Execute the agent's decision on the browser. Returns outcome string."""
+async def _execute_action(call: ActionCall, deps: AgentDeps) -> str:
+    """Execute a single action. Returns outcome string."""
     cdp = deps.cdp
-    action = decision.action
-    args = decision.action_args
+    action = call.action
+    args = call.action_args
 
     try:
         if action == "navigate":
@@ -136,11 +153,27 @@ async def _execute_decision(decision: AgentDecision, deps: AgentDeps) -> str:
 
         elif action == "read_page_text":
             selector = args.get("selector", "body")
-            text = await cdp.read_page_text(selector)
-            deps.last_read_text = text
-            deps.last_read_selector = selector
+            max_chars = args.get("max_chars", 2000)
+            around = args.get("around")
+            text = await cdp.read_page_text(selector, max_chars=max_chars, around=around)
+            # Heuristic: if the returned text is near the cap, the page was
+            # bigger than we saw. The agent can use this to decide whether
+            # to read again with `around` set.
+            was_truncated = len(text) >= max_chars - 16
+            deps.recent_reads.append(ReadEntry(
+                step=deps.step_number,
+                selector=selector,
+                text=text,
+                was_truncated=was_truncated,
+            ))
+            if len(deps.recent_reads) > MAX_RECENT_READS:
+                deps.recent_reads = deps.recent_reads[-MAX_RECENT_READS:]
             preview = text[:120] if text else "(empty)"
-            return f"read_page_text({selector!r}) → {len(text)} chars. Content shown in next step context."
+            around_note = f" around={around!r}" if around else ""
+            return (
+                f"read_page_text({selector!r}{around_note}, max_chars={max_chars}) "
+                f"→ {len(text)} chars. Content shown in next step context."
+            )
 
         elif action == "find_element":
             targets = await cdp.get_targets()
@@ -164,6 +197,10 @@ async def _execute_decision(decision: AgentDecision, deps: AgentDeps) -> str:
                 t = scored[0][1]
                 return f"Found: [{t.ref_id}] {t.role} '{t.name}' value='{t.value}'"
             return f"Element matching '{desc}' not found in {len(targets)} targets"
+
+        elif action == "append_scratchpad":
+            deps.scratchpad = deps.scratchpad.append(args.get("line", ""))
+            return "Scratchpad appended"
 
         elif action == "write_scratchpad":
             deps.scratchpad = deps.scratchpad.update(args.get("content", ""))
@@ -301,15 +338,12 @@ class AgentHarness:
                 current_page_title=page_title,
                 ax_tree=filtered_ax + stagnation_note,
                 ax_diff=ax_diff,
-                last_read_text=deps.last_read_text,
-                last_read_selector=deps.last_read_selector,
+                recent_reads=list(deps.recent_reads),  # snapshot of FIFO window
                 step_summaries=deps.step_summaries,
             )
-            # Clear after including — agent should write what it needs to scratchpad
-            deps.last_read_text = ""
-            deps.last_read_selector = ""
 
-            log.info("[%s] step %d  url=%s  ax_elements=%d", deps.user_id, step, current_url[:80], len(targets))
+            log.info("[%s] step %d  url=%s  ax_elements=%d  recent_reads=%d",
+                     deps.user_id, step, current_url[:80], len(targets), len(turn.recent_reads))
 
             # Plan
             t_plan = time.perf_counter()
@@ -317,80 +351,94 @@ class AgentHarness:
             result = await agent.run(_turn_to_prompt(turn), deps=deps)
             decision: AgentDecision = result.output
             timings["model_plan"] += time.perf_counter() - t_plan
-            log.info("[%s] step %d  decision=%s  args=%s", deps.user_id, step, decision.action, str(decision.action_args)[:120])
+            actions_summary = ", ".join(f"{c.action}" for c in decision.actions) or "(none)"
+            log.info("[%s] step %d  actions=[%s]", deps.user_id, step, actions_summary)
 
-            # Update scratchpad if agent requested it via the field
-            if decision.scratchpad_update:
-                deps.scratchpad = deps.scratchpad.update(decision.scratchpad_update)
-
-            # Guardrail: critical action approval
+            # Guardrail: critical action approval (check first action only;
+            # the model should split multiple critical actions across steps)
             t_ap = time.perf_counter()
-            approval_triggered = False
-            if check_critical_action(decision.action, decision.action_args):
-                approval_triggered = True
+            first = decision.actions[0] if decision.actions else None
+            if first and check_critical_action(first.action, first.action_args):
                 await deps.ws_send({
                     "type": "approval_required",
-                    "action": decision.action,
-                    "args": decision.action_args,
+                    "action": first.action,
+                    "args": first.action_args,
                     "reasoning": decision.reasoning,
                 })
                 reply = await deps.human_input_queue.get()
                 if str(reply).lower() not in ("yes", "y", "approve", "ok", "confirm"):
                     deps.step_summaries.append(StepSummary(
                         step=step, url=current_url,
-                        action_taken=f"[BLOCKED] {decision.action}",
+                        action_taken=f"[BLOCKED] {first.action}",
                         outcome="User denied approval",
                     ))
                     timings["approval_pause"] += time.perf_counter() - t_ap
                     continue
             timings["approval_pause"] += time.perf_counter() - t_ap
 
-            # Stream progress — send thought (user-facing), not reasoning (internal)
+            # Stream progress — one bubble per non-internal action. Internal
+            # actions (scratchpad) are silent; the extension renders each
+            # step_progress as its own bubble so multi-action naturally becomes
+            # N bubbles without an extension change.
             t_ws = time.perf_counter()
-            action_target = decision.action_args.get("url") if decision.action == "navigate" else None
-            await deps.ws_send({
-                "type": "step_progress",
-                "step": step,
-                "action": decision.action,
-                "thought": decision.thought,
-                "url": current_url,
-                "action_target": action_target,
-            })
+            for call in decision.actions:
+                if call.action in _INTERNAL_ACTIONS:
+                    continue
+                action_target = call.action_args.get("url") if call.action == "navigate" else None
+                await deps.ws_send({
+                    "type": "step_progress",
+                    "step": step,
+                    "action": call.action,
+                    "thought": decision.thought,
+                    "url": current_url,
+                    "action_target": action_target,
+                })
             timings["ws_send_progress"] += time.perf_counter() - t_ws
 
             # Execute
             t_ex = time.perf_counter()
-            outcome = await _execute_decision(decision, deps)
+            outcomes: list[str] = []
+            action_trace: list[str] = []
+            terminal_hit = False
+            for call in decision.actions:
+                action_trace.append(f"{call.action}({call.action_args})")
+                outcome = await _execute_action(call, deps)
+                outcomes.append(outcome)
+                if call.action in _TERMINAL_ACTIONS:
+                    terminal_hit = True
+                    break
             timings["execute"] += time.perf_counter() - t_ex
+            combined_outcome = "; ".join(outcomes) if outcomes else "no action"
 
             # Save targets for next-step diff
             deps.prev_targets = targets
 
-            # Persist scratchpad after any update
-            if decision.scratchpad_update or decision.action in ("write_scratchpad",):
+            # Persist scratchpad iff any scratchpad action ran in this batch
+            scratchpad_actions = {"write_scratchpad", "append_scratchpad"}
+            if any(c.action in scratchpad_actions for c in decision.actions):
                 run_log.save_scratchpad(deps.scratchpad.content)
 
             # Log step
             run_log.log_step(
                 step=step,
                 url=current_url,
-                action=decision.action,
-                args=decision.action_args,
+                action=action_trace[0] if action_trace else "no-op",
+                args=decision.actions[0].action_args if decision.actions else {},
                 reasoning=decision.reasoning,
                 thought=decision.thought,
-                outcome=outcome,
+                outcome=combined_outcome,
             )
 
             # Record
             deps.step_summaries.append(StepSummary(
                 step=step,
                 url=current_url,
-                action_taken=f"{decision.action}({decision.action_args})",
-                outcome=outcome[:120],
+                action_taken="; ".join(action_trace) if action_trace else "no action",
+                outcome=combined_outcome[:120],
             ))
 
             # Terminal?
-            if deps.result is not None:
+            if terminal_hit or deps.result is not None:
                 deps.result.timing = self._log_timings(
                     deps.user_id, timings, steps_run, time.perf_counter() - task_start, cumulative_snapshots,
                 )
