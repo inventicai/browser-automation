@@ -169,6 +169,20 @@ function deriveReasoningFromAction(title, iconKind) {
   return t.length > 80 ? `${t.slice(0, 77)}…` : `${t}…`;
 }
 
+// ponytail: render one tool call from the orchestrator's `actions` array
+// into a single line for the details panel. The line is plain text — the
+// details panel is text-only, no markdown. Future: when the tool-call
+// showcase is removed from the side panel entirely, this function is the
+// only thing about the new shape that will stay.
+function formatToolCall(a) {
+  if (!a || typeof a.action !== 'string') return '';
+  const target = a.action_target ? ` → ${a.action_target}` : '';
+  const args = a.args && typeof a.args === 'object' && Object.keys(a.args).length > 0
+    ? ` ${JSON.stringify(a.args)}`
+    : '';
+  return `→ ${a.action}${target}${args}`;
+}
+
 // ── SW keep-alive (MV3) ──────────────────────────────────────────────────
 // ponytail: open a long-lived port to the service worker so Chrome doesn't
 // terminate it between tasks. Without this, the SW is killed after ~30s of
@@ -1083,14 +1097,18 @@ chrome.runtime.onMessage.addListener((message) => {
       const bubbleTitle = (message.clientText && message.clientText.trim())
         || (message.reasoning && message.reasoning.trim())
         || deriveReasoningFromAction(message.title || '', message.iconKind);
-      // ponytail: the details panel shows the raw tool call AND, when present,
-      // the model's internal reasoning — so the operator can drill in for
-      // debugging while the user-facing chat stays clean.
-      const detailsLines = [`${message.title || ''}${message.result ? ' → ' + message.result : ''}`.trim()];
+      // ponytail: the details panel shows the tool calls. When multi-action,
+      // server ships an `actions` array — one bubble per step, with all
+      // tool calls listed under the toggle. Falls back to the legacy
+      // single-tool-call shape when `actions` is missing.
+      const actions = Array.isArray(message.actions) ? message.actions : [];
+      const stepDetailsLines = actions.length > 0
+        ? actions.map(formatToolCall)
+        : [`${message.title || ''}${message.result ? ' → ' + message.result : ''}`.trim()];
       if (message.reasoning && message.clientText && message.reasoning.trim() !== message.clientText.trim()) {
-        detailsLines.push(`--- reasoning ---\n${message.reasoning.trim()}`);
+        stepDetailsLines.push(`--- reasoning ---\n${message.reasoning.trim()}`);
       }
-      const details = detailsLines.filter(Boolean).join('\n');
+      const details = stepDetailsLines.filter(Boolean).join('\n');
       // ponytail: each step gets its OWN persistent bubble. clientText is the
       // bubble title; raw tool call + reasoning live behind a "details"
       // toggle so the chat reads naturally and the operator can drill in

@@ -303,6 +303,7 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
           url:         msg.url ?? "",
           pageTitle:   "",
           actionTarget: msg.action_target ?? null,
+          actions:     Array.isArray(msg.actions) ? msg.actions : [],
           iconKind:    msg.action ?? "navigate",
           ts:          Date.now(),
         });

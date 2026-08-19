@@ -399,22 +399,32 @@ class AgentHarness:
             if blocked:
                 continue
 
-            # Stream progress — one bubble per non-internal action. Internal
-            # actions (scratchpad) are silent; the extension renders each
-            # step_progress as its own bubble so multi-action naturally becomes
-            # N bubbles without an extension change.
+            # Stream progress — one bubble per decision. The full action list
+            # ships in the `actions` array so the side panel can render all
+            # tool calls under the "details" toggle. The lead action is also
+            # echoed at the top level for the icon + chip. Internal actions
+            # (scratchpad) are still silent — they're metadata, not tool calls
+            # the user sees.
             t_ws = time.perf_counter()
-            for call in decision.actions:
-                if call.action in _INTERNAL_ACTIONS:
-                    continue
-                action_target = call.action_args.get("url") if call.action == "navigate" else None
+            external = [c for c in decision.actions if c.action not in _INTERNAL_ACTIONS]
+            if external:
+                actions_payload = [
+                    {
+                        "action": c.action,
+                        "action_target": c.action_args.get("url") if c.action == "navigate" else None,
+                        "args": c.action_args,
+                    }
+                    for c in external
+                ]
+                lead = external[0]
                 await deps.ws_send({
                     "type": "step_progress",
                     "step": step,
-                    "action": call.action,
+                    "action": lead.action,
+                    "action_target": lead.action_args.get("url") if lead.action == "navigate" else None,
+                    "actions": actions_payload,
                     "thought": decision.thought,
                     "url": current_url,
-                    "action_target": action_target,
                 })
             timings["ws_send_progress"] += time.perf_counter() - t_ws
 
