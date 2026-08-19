@@ -30,12 +30,9 @@ def run_server() -> None:
     print("  1. Open chrome://extensions/")
     print("  2. Load unpacked: clients/brotto-extension/dist")
     print("  3. Configure server URL in extension options")
-    print("\nStarting in 2 seconds...\n")
 
     import uvicorn
     from brotto_orchestrator.main import app
-
-    time.sleep(2)
 
     uvicorn.run(
         app,
