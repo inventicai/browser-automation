@@ -15,36 +15,94 @@ class StepSummary(BaseModel):
     extracted: str | None = None
 
 
-class Scratchpad(BaseModel):
-    content: str = ""
+class MemoryEntry(BaseModel):
+    """One read_page_text result, captured automatically.
 
-    def update(self, new_content: str) -> "Scratchpad":
-        return Scratchpad(content=new_content[:3200])
+    Lives in Scratchpad.entries. The agent sees the manifest in every step
+    (a small digest per entry) and recalls the full body via the
+    recall_memory action. The body is the raw text returned by the CDP;
+    the digest is the first ~200 chars — small enough to fit many entries
+    in the prompt without bloating it.
+    """
+    id: str
+    step: int
+    selector: str
+    around: str | None
+    digest: str
+    body: str
+    was_truncated: bool
+
+
+DIGEST_LEN = 200
+
+
+class Scratchpad(BaseModel):
+    """Long-term memory. Two parts:
+
+    - entries: every read_page_text result, captured automatically by code.
+      The agent sees the digest (small) in every step's prompt; the full body
+      is loaded on demand via recall_memory.
+    - notes: agent-synthesized free-form text. The agent writes high-level
+      findings, decisions, sub-question answers. This is the "narrative" the
+      agent curates on top of the raw reads.
+
+    No hard cap on either — sized for complex multi-step tasks. The
+    manifest is small; the bodies are loaded on demand.
+    """
+    entries: list[MemoryEntry] = field(default_factory=list)
+    notes: str = ""
+
+    def with_entry(self, entry: MemoryEntry) -> "Scratchpad":
+        return Scratchpad(
+            entries=self.entries + [entry],
+            notes=self.notes,
+        )
+
+    def lookup(self, entry_id: str) -> MemoryEntry | None:
+        for e in self.entries:
+            if e.id == entry_id:
+                return e
+        return None
+
+    def append_note(self, line: str) -> "Scratchpad":
+        if not line:
+            return self
+        if self.notes:
+            return Scratchpad(entries=self.entries, notes=(self.notes + "\n" + line).strip())
+        return Scratchpad(entries=self.entries, notes=line.strip())
+
+    def write_notes(self, content: str) -> "Scratchpad":
+        return Scratchpad(entries=self.entries, notes=content)
 
 
 class AgentTurn(BaseModel):
     task: str
     step_number: int
-    scratchpad: str
+    scratchpad_notes: str
+    scratchpad_entries: list[MemoryEntry]
     current_url: str
     current_page_title: str
     ax_tree: str
     ax_diff: str
-    last_read_text: str   # result of last read_page_text, empty if none
-    last_read_selector: str
     step_summaries: list[StepSummary]
 
 
-class AgentDecision(BaseModel):
-    reasoning: str  # internal chain-of-thought — logged only, never shown to user
-    thought: str    # one sentence shown live in the side panel — no internals, no jargon
+class ActionCall(BaseModel):
+    """One action in a multi-action decision. The agent may emit several of
+    these per step (e.g. click + append_scratchpad)."""
     action: Literal[
         "navigate", "click", "type_text", "scroll",
-        "find_element", "read_page_text", "write_scratchpad", "read_scratchpad",
+        "find_element", "read_page_text",
+        "write_scratchpad", "append_scratchpad", "read_scratchpad", "recall_memory",
         "task_complete", "cannot_complete", "ask_human",
     ]
     action_args: dict
-    scratchpad_update: str | None = None
+
+
+class AgentDecision(BaseModel):
+    reasoning: str
+    thought: str
+    actions: list[ActionCall]
 
 
 class TaskResult(BaseModel):
@@ -70,5 +128,3 @@ class AgentDeps:
     step_number: int = 0
     result: TaskResult | None = None
     prev_targets: list = field(default_factory=list)  # AX targets from previous step for diffing
-    last_read_text: str = ""          # last read_page_text result, shown in next turn
-    last_read_selector: str = ""      # selector used for that read

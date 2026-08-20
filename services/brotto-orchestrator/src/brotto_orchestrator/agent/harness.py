@@ -11,8 +11,12 @@ from typing import Callable, Coroutine, Any
 import logging
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UserError
 
-from .context import AgentDeps, AgentDecision, AgentTurn, StepSummary, TaskResult, Scratchpad
+from .context import (
+    AgentDeps, AgentDecision, AgentTurn, ActionCall,
+    StepSummary, TaskResult, Scratchpad, MemoryEntry, DIGEST_LEN,
+)
 from .ax_filter import filter_ax_targets
 from .ax_diff import compute_ax_diff
 from .stagnation import check_stagnation
@@ -21,6 +25,15 @@ from .prompt import SYSTEM_PROMPT
 from .run_logger import RunLogger
 
 _HISTORY_WINDOW = 12  # keep first 3 + last 9 steps in prompt
+
+# Actions that don't fire a UI bubble. Scratchpad mutations and recall are
+# metadata — the user sees the thought, not the write/recall itself.
+_INTERNAL_ACTIONS = {
+    "write_scratchpad", "append_scratchpad", "read_scratchpad",
+    "recall_memory",
+}
+# Actions that short-circuit the rest of the multi-action list.
+_TERMINAL_ACTIONS = {"task_complete", "cannot_complete"}
 
 log = logging.getLogger("brotto.harness")
 
@@ -33,11 +46,29 @@ TIMING_BUCKETS = (
     "stagnation",       # stagnation check
     "model_plan",       # agent.run — the LLM call
     "approval_pause",   # ws_send(approval_required) + queue wait
-    "execute",          # _execute_decision (CDP action + post-obs)
-    "ws_send_progress", # step_progress notification
+    "execute",          # _execute_actions (CDP actions + post-obs)
+    "ws_send_progress", # step_progress notifications
 )
 
 _MODEL = os.getenv("AGENT_MODEL", "no-model")
+# Context window size (tokens) used for the side panel's CONTEXT cell
+# (% of context used). Override per model in .env. Defaults to 400k.
+_CONTEXT_WINDOW_TOKENS = int(os.getenv("CONTEXT_WINDOW_TOKENS", "400000"))
+
+
+def _build_context(tokens: int | None) -> dict:
+    """Build the context payload the side panel renders.
+
+    The cell shows `pct` (and tooltip `tokens` / `window`) — all math
+    lives here so the frontend is a dumb display. `tokens` may be None
+    when the model hasn't been called yet (e.g. before step 1); we
+    return null pct so the cell shows "0%" via the frontend's
+    null-tokens branch.
+    """
+    if tokens is None or tokens < 0:
+        return {"tokens": None, "window": _CONTEXT_WINDOW_TOKENS, "pct": None}
+    pct = round((tokens / _CONTEXT_WINDOW_TOKENS) * 100, 1) if _CONTEXT_WINDOW_TOKENS else 0
+    return {"tokens": tokens, "window": _CONTEXT_WINDOW_TOKENS, "pct": pct}
 
 
 def _build_agent() -> Agent[AgentDeps, AgentDecision]:
@@ -77,16 +108,26 @@ def _turn_to_prompt(turn: AgentTurn) -> str:
     history = "\n".join(history_lines) or "(none yet)"
 
     diff_section = f"\n### What changed after last action\n{turn.ax_diff}\n" if turn.ax_diff else ""
-    read_section = (
-        f"\n### Page text read last step (selector: {turn.last_read_selector!r})\n{turn.last_read_text}\n"
-        if turn.last_read_text else ""
-    )
+
+    # Memory manifest: small per-entry digest. Full bodies are loaded on
+    # demand via recall_memory(id). This is the "skills" pattern — the
+    # agent sees the description (digest) for free, fetches full content
+    # only when it actually needs it.
+    manifest_lines = ["### Memory manifest (recall_memory(id) fetches full body)"]
+    for e in turn.scratchpad_entries:
+        around = f" around={e.around!r}" if e.around else ""
+        trunc = " [truncated]" if e.was_truncated else ""
+        manifest_lines.append(f"- `{e.id}` step={e.step} sel={e.selector}{around}{trunc}: {e.digest}")
+    manifest_section = "\n".join(manifest_lines) + "\n"
 
     return f"""## Task
 {turn.task}
 
-## Your scratchpad
-{turn.scratchpad or "(empty — write important things here)"}
+## Your memory (notes)
+{turn.scratchpad_notes or "(empty — append_scratchpad(line) to add your own findings here)"}
+
+## Memory manifest (auto-captured reads)
+{manifest_section}
 
 ## Steps completed
 {history}
@@ -94,19 +135,19 @@ def _turn_to_prompt(turn: AgentTurn) -> str:
 ## Current page (step {turn.step_number})
 URL: {turn.current_url}
 Title: {turn.current_page_title}
-{diff_section}{read_section}
+{diff_section}
 ### AX Tree (interactive elements only)
 {turn.ax_tree}
 
-## What is your next action?
+## What is your next action(s)?
 """
 
 
-async def _execute_decision(decision: AgentDecision, deps: AgentDeps) -> str:
-    """Execute the agent's decision on the browser. Returns outcome string."""
+async def _execute_action(call: ActionCall, deps: AgentDeps) -> str:
+    """Execute a single action. Returns outcome string."""
     cdp = deps.cdp
-    action = decision.action
-    args = decision.action_args
+    action = call.action
+    args = call.action_args
 
     try:
         if action == "navigate":
@@ -136,11 +177,34 @@ async def _execute_decision(decision: AgentDecision, deps: AgentDeps) -> str:
 
         elif action == "read_page_text":
             selector = args.get("selector", "body")
-            text = await cdp.read_page_text(selector)
-            deps.last_read_text = text
-            deps.last_read_selector = selector
-            preview = text[:120] if text else "(empty)"
-            return f"read_page_text({selector!r}) → {len(text)} chars. Content shown in next step context."
+            max_chars = args.get("max_chars", 2000)
+            around = args.get("around")
+            text = await cdp.read_page_text(selector, max_chars=max_chars, around=around)
+            # Heuristic: if the returned text is near the cap, the page was
+            # bigger than we saw. The agent can use this to decide whether
+            # to read again with `around` set.
+            was_truncated = len(text) >= max_chars - 16
+            # Auto-capture: every read lands in memory. Zero tokens. The
+            # agent sees the manifest in the next step's prompt and can
+            # recall this entry's full body via recall_memory(id).
+            entry_id = f"r{len(deps.scratchpad.entries) + 1}"
+            digest_body = text[:DIGEST_LEN]
+            digest = digest_body + ("…" if len(text) > DIGEST_LEN else "")
+            deps.scratchpad = deps.scratchpad.with_entry(MemoryEntry(
+                id=entry_id,
+                step=deps.step_number,
+                selector=selector,
+                around=around,
+                digest=digest,
+                body=text,
+                was_truncated=was_truncated,
+            ))
+            around_note = f" around={around!r}" if around else ""
+            return (
+                f"read_page_text({selector!r}{around_note}, max_chars={max_chars}) "
+                f"→ {len(text)} chars. Auto-captured as {entry_id} in memory. "
+                f"Use recall_memory('{entry_id}') for full body."
+            )
 
         elif action == "find_element":
             targets = await cdp.get_targets()
@@ -165,12 +229,36 @@ async def _execute_decision(decision: AgentDecision, deps: AgentDeps) -> str:
                 return f"Found: [{t.ref_id}] {t.role} '{t.name}' value='{t.value}'"
             return f"Element matching '{desc}' not found in {len(targets)} targets"
 
+        elif action == "append_scratchpad":
+            deps.scratchpad = deps.scratchpad.append_note(args.get("line", ""))
+            return "Memory note appended"
+
         elif action == "write_scratchpad":
-            deps.scratchpad = deps.scratchpad.update(args.get("content", ""))
-            return "Scratchpad updated"
+            deps.scratchpad = deps.scratchpad.write_notes(args.get("content", ""))
+            return "Memory notes rewritten"
 
         elif action == "read_scratchpad":
-            return deps.scratchpad.content or "(empty)"
+            # Returns the manifest + notes as a single blob so the agent
+            # can see everything in one call. (recall_memory is the
+            # token-efficient path — call this only when you need a
+            # full dump.)
+            lines = []
+            if deps.scratchpad.entries:
+                lines.append("### Memory manifest")
+                for e in deps.scratchpad.entries:
+                    lines.append(f"- `{e.id}` step={e.step}: {e.digest}")
+            if deps.scratchpad.notes:
+                lines.append("### Notes")
+                lines.append(deps.scratchpad.notes)
+            return "\n".join(lines) or "(empty)"
+
+        elif action == "recall_memory":
+            entry_id = args.get("entry_id", "")
+            entry = deps.scratchpad.lookup(entry_id)
+            if entry is None:
+                available = [e.id for e in deps.scratchpad.entries]
+                return f"Memory entry {entry_id!r} not found. Available: {available}"
+            return entry.body
 
         elif action == "task_complete":
             deps.result = TaskResult(
@@ -228,10 +316,12 @@ class AgentHarness:
             deps.task_id = str(uuid.uuid4())
         run_log = RunLogger(deps.task_id)
 
-        # Restore scratchpad if this task was previously interrupted
-        saved = run_log.load_scratchpad()
-        if saved:
-            deps.scratchpad = deps.scratchpad.update(saved)
+        # Restore scratchpad if this task was previously interrupted.
+        # load_scratchpad returns a structured Scratchpad (entries + notes).
+        # Legacy plain-text files (no # MEMORY v2 header) parse as notes-only.
+        loaded = run_log.load_scratchpad()
+        if loaded.entries or loaded.notes:
+            deps.scratchpad = loaded
 
         for step in range(self.MAX_STEPS):
             deps.step_number = step
@@ -296,100 +386,176 @@ class AgentHarness:
             turn = AgentTurn(
                 task=deps.task,
                 step_number=step,
-                scratchpad=deps.scratchpad.content,
+                scratchpad_notes=deps.scratchpad.notes,
+                scratchpad_entries=list(deps.scratchpad.entries),  # manifest snapshot
                 current_url=current_url,
                 current_page_title=page_title,
                 ax_tree=filtered_ax + stagnation_note,
                 ax_diff=ax_diff,
-                last_read_text=deps.last_read_text,
-                last_read_selector=deps.last_read_selector,
                 step_summaries=deps.step_summaries,
             )
-            # Clear after including — agent should write what it needs to scratchpad
-            deps.last_read_text = ""
-            deps.last_read_selector = ""
 
-            log.info("[%s] step %d  url=%s  ax_elements=%d", deps.user_id, step, current_url[:80], len(targets))
+            log.info("[%s] step %d  url=%s  ax_elements=%d  memory_entries=%d",
+                     deps.user_id, step, current_url[:80], len(targets), len(turn.scratchpad_entries))
 
             # Plan
             t_plan = time.perf_counter()
             log.debug("[%s] calling model...", deps.user_id)
-            result = await agent.run(_turn_to_prompt(turn), deps=deps)
-            decision: AgentDecision = result.output
+            try:
+                result = await agent.run(_turn_to_prompt(turn), deps=deps)
+                decision: AgentDecision = result.output
+            except UserError as e:
+                # pydantic-ai auto-detect fails on bare model names that don't
+                # match its known patterns. With defer_model_check=True the
+                # check fires here, not at Agent construction. Re-raise with
+                # a hint that names the fix without hard-coding a model id.
+                if "Unknown model" in str(e):
+                    raise UserError(
+                        f"{e}. Set AGENT_MODEL to '<provider>:<model>' "
+                        f"to route to the correct provider."
+                    ) from e
+                raise
             timings["model_plan"] += time.perf_counter() - t_plan
-            log.info("[%s] step %d  decision=%s  args=%s", deps.user_id, step, decision.action, str(decision.action_args)[:120])
+            actions_summary = ", ".join(f"{c.action}" for c in decision.actions) or "(none)"
+            log.info("[%s] step %d  actions=[%s]", deps.user_id, step, actions_summary)
 
-            # Update scratchpad if agent requested it via the field
-            if decision.scratchpad_update:
-                deps.scratchpad = deps.scratchpad.update(decision.scratchpad_update)
-
-            # Guardrail: critical action approval
+            # Guardrail: critical action approval (check ALL actions in the
+            # batch — checking only the first was a bypass: `click(delete) +
+            # append_scratchpad` would only see the first critical action,
+            # and if the model put a non-critical action first, critical
+            # actions later in the batch ran unchecked). One approval per
+            # critical action; deny aborts the entire batch.
             t_ap = time.perf_counter()
-            approval_triggered = False
-            if check_critical_action(decision.action, decision.action_args):
-                approval_triggered = True
+            critical_actions = [
+                c for c in decision.actions
+                if check_critical_action(c.action, c.action_args)
+            ]
+            blocked = False
+            for c in critical_actions:
                 await deps.ws_send({
                     "type": "approval_required",
-                    "action": decision.action,
-                    "args": decision.action_args,
+                    "action": c.action,
+                    "args": c.action_args,
                     "reasoning": decision.reasoning,
                 })
                 reply = await deps.human_input_queue.get()
                 if str(reply).lower() not in ("yes", "y", "approve", "ok", "confirm"):
                     deps.step_summaries.append(StepSummary(
                         step=step, url=current_url,
-                        action_taken=f"[BLOCKED] {decision.action}",
+                        action_taken=f"[BLOCKED] {c.action}",
                         outcome="User denied approval",
                     ))
-                    timings["approval_pause"] += time.perf_counter() - t_ap
-                    continue
+                    blocked = True
+                    break
             timings["approval_pause"] += time.perf_counter() - t_ap
+            if blocked:
+                continue
 
-            # Stream progress — send thought (user-facing), not reasoning (internal)
+            # Stream progress — one bubble per decision. The full action list
+            # ships in the `actions` array so the side panel can render all
+            # tool calls under the "details" toggle. The lead action is also
+            # echoed at the top level for the icon + chip. Internal actions
+            # (scratchpad) are still silent — they're metadata, not tool calls
+            # the user sees.
+            #
+            # ponytail: actual `result.usage` from pydantic-ai (the model
+            # provider's reported token count, not a `len(prompt) // 4`
+            # approximation). The backend computes the percentage so the
+            # frontend is a dumb display. `usage` is a property, not a method.
             t_ws = time.perf_counter()
-            action_target = decision.action_args.get("url") if decision.action == "navigate" else None
-            await deps.ws_send({
-                "type": "step_progress",
-                "step": step,
-                "action": decision.action,
-                "thought": decision.thought,
-                "url": current_url,
-                "action_target": action_target,
-            })
+            try:
+                usage = result.usage
+                tokens_used = usage.input_tokens if usage else None
+            except Exception:
+                tokens_used = None
+            context = _build_context(tokens_used)
+            external = [c for c in decision.actions if c.action not in _INTERNAL_ACTIONS]
+            if external:
+                actions_payload = [
+                    {
+                        "action": c.action,
+                        "action_target": c.action_args.get("url") if c.action == "navigate" else None,
+                        "args": c.action_args,
+                    }
+                    for c in external
+                ]
+                lead = external[0]
+                await deps.ws_send({
+                    "type": "step_progress",
+                    "step": step,
+                    "action": lead.action,
+                    "action_target": lead.action_args.get("url") if lead.action == "navigate" else None,
+                    "actions": actions_payload,
+                    "thought": decision.thought,
+                    "url": current_url,
+                    "context": context,
+                })
+            else:
+                # ponytail: no external actions this step (e.g. a
+                # scratchpad-only step). Still emit context so the sidepanel
+                # utilization % updates on every step.
+                await deps.ws_send({
+                    "type": "context_update",
+                    "context": context,
+                })
             timings["ws_send_progress"] += time.perf_counter() - t_ws
 
             # Execute
             t_ex = time.perf_counter()
-            outcome = await _execute_decision(decision, deps)
+            outcomes: list[str] = []
+            action_trace: list[str] = []
+            for call in decision.actions:
+                action_trace.append(f"{call.action}({call.action_args})")
+                outcome = await _execute_action(call, deps)
+                outcomes.append(outcome)
+                # Short-circuit the rest of the batch on a terminal action
+                # (task_complete/cannot_complete — sets deps.result) or on
+                # ask_human (pauses for user input; any action after it in
+                # the same batch would run before the user could see the
+                # question, which is the wrong order).
+                if call.action in _TERMINAL_ACTIONS or call.action == "ask_human":
+                    break
             timings["execute"] += time.perf_counter() - t_ex
+            combined_outcome = "; ".join(outcomes) if outcomes else "no action"
 
             # Save targets for next-step diff
             deps.prev_targets = targets
 
-            # Persist scratchpad after any update
-            if decision.scratchpad_update or decision.action in ("write_scratchpad",):
-                run_log.save_scratchpad(deps.scratchpad.content)
+            # Persist the full structured memory whenever any step touched
+            # it: read_page_text (auto-capture), append_scratchpad /
+            # write_scratchpad (synthesized notes). The file is the
+            # source of truth — operators can inspect
+            # logs/runs/<task_id>/scratchpad.txt to see what memory was
+            # built. Auto-append writes the digest; the full body lives
+            # only in-memory and is lost on restart.
+            memory_actions = {
+                "read_page_text", "write_scratchpad", "append_scratchpad",
+            }
+            if any(c.action in memory_actions for c in decision.actions):
+                run_log.save_scratchpad(deps.scratchpad)
 
             # Log step
             run_log.log_step(
                 step=step,
                 url=current_url,
-                action=decision.action,
-                args=decision.action_args,
+                action=action_trace[0] if action_trace else "no-op",
+                args=decision.actions[0].action_args if decision.actions else {},
                 reasoning=decision.reasoning,
                 thought=decision.thought,
-                outcome=outcome,
+                outcome=combined_outcome,
             )
 
             # Record
             deps.step_summaries.append(StepSummary(
                 step=step,
                 url=current_url,
-                action_taken=f"{decision.action}({decision.action_args})",
-                outcome=outcome[:120],
+                action_taken="; ".join(action_trace) if action_trace else "no action",
+                outcome=combined_outcome[:120],
             ))
 
-            # Terminal?
+            # Terminal? Gate on deps.result, not on the action name. A
+            # terminal action that raises an exception before setting
+            # deps.result should not try to read .timing off a None.
             if deps.result is not None:
                 deps.result.timing = self._log_timings(
                     deps.user_id, timings, steps_run, time.perf_counter() - task_start, cumulative_snapshots,

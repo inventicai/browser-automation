@@ -26,6 +26,11 @@ let sessionId: string | null = null;
 let serverUrl: string = DEFAULT_SERVER;
 let taskTerminalEmitted = false;
 let stepIndex = 0;
+// ponytail: monotonic observation seq per session. The server's
+// obs_validator dedupes on this so duplicate WS deliveries (reconnects,
+// queued messages) are dropped silently. Reset on a new session — the
+// server's tracker is also freshly created on `/v1/sessions`.
+let observationSeq = 0;
 
 // Pause state — persists across SW restarts via chrome.storage.session so a
 // quiet login page doesn't lose the "we're waiting for the user" signal.
@@ -209,7 +214,7 @@ async function sendObservation(tabId: number): Promise<void> {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   try {
     const obs = await captureObservation(tabId);
-    ws.send(JSON.stringify({ type: "observation", ...obs }));
+    ws.send(JSON.stringify({ type: "observation", seq: ++observationSeq, ...obs }));
     if (typeof obs.url === "string" && obs.url !== lastObservedUrl) {
       lastObservedUrl = obs.url;
       void persistSession();
@@ -269,6 +274,7 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
   if (!resp.ok) throw new Error(`Session create failed: HTTP ${resp.status}`);
   const { session_id, websocket_url } = await resp.json() as { session_id: string; websocket_url: string };
   sessionId = session_id;
+  observationSeq = 0;
 
   const wsUrl = websocket_url.startsWith("ws") ? websocket_url : websocket_url.replace(/^http/, "ws");
   ws = new WebSocket(wsUrl);
@@ -303,10 +309,22 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
           url:         msg.url ?? "",
           pageTitle:   "",
           actionTarget: msg.action_target ?? null,
+          actions:     Array.isArray(msg.actions) ? msg.actions : [],
           iconKind:    msg.action ?? "navigate",
           ts:          Date.now(),
+          context:     msg.context ?? null,
         });
         notifyUi({ type: "canonical_status", status: "executing" });
+        break;
+
+      case "context_update":
+        // ponytail: step had no external actions (e.g. scratchpad-only).
+        // Still emit context so the sidepanel utilization % updates on
+        // every step, not just on visible UI bubbles.
+        notifyUi({
+          type:    "context_update",
+          context: msg.context ?? null,
+        });
         break;
 
       case "task_result": {
@@ -523,6 +541,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case "get_connection_status":
           sendResponse({ success: true, status: { connected: ws?.readyState === WebSocket.OPEN, session_id: sessionId } });
           break;
+
+        case "get_context": {
+          // ponytail: sidepanel asks the backend (via the SW so we
+          // proxy through the configured serverUrl) for the model's
+          // context window. Backend returns {model, window}; the
+          // harness's per-step messages carry the actual usage.
+          try {
+            const r = await fetch(`${serverUrl}/context`);
+            if (!r.ok) {
+              sendResponse({ success: false, error: `HTTP ${r.status}` });
+              return;
+            }
+            const data = await r.json();
+            sendResponse({ success: true, context: data });
+          } catch (e) {
+            sendResponse({ success: false, error: e instanceof Error ? e.message : String(e) });
+          }
+          break;
+        }
 
         default:
           sendResponse({ success: false, error: "Unknown message type" });

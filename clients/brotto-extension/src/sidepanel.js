@@ -45,14 +45,19 @@ settingsBtn.addEventListener('click', () => {
 const seenTabs = new Map(); // tabId → {kind, url, title, lastUpdate}
 let tabBarCollapsed = false;
 function renderTabBar() {
-  if (!tabBarBody) return;
+  // ponytail: tab bar is hidden — the new TABS status cell handles the
+  // count, and the tab lifecycle rows were noisy (badge + title + URL +
+  // tab id, with the badge floating outside the pill). We keep the
+  // function around so the tab lifecycle still feeds the cell, but the
+  // panel itself is no longer rendered.
+  if (tabBar) tabBar.hidden = true;
+  return;
   tabBarBody.replaceChildren();
   if (seenTabs.size === 0) {
     const empty = document.createElement('div');
     empty.className = 'tab-row-empty';
     empty.textContent = 'No tabs opened by the agent.';
     tabBarBody.appendChild(empty);
-    tabBar.hidden = false;
     return;
   }
   // ponytail: render in event order; we keep insertion order via Map. Most
@@ -77,13 +82,11 @@ function renderTabBar() {
     urlEl.title = row.url || '';
     info.appendChild(urlEl);
     row_el.appendChild(info);
-    const idEl = document.createElement('span');
-    idEl.className = 'tab-row-url';
-    idEl.textContent = `#${row.tabId}`;
-    row_el.appendChild(idEl);
     tabBarBody.appendChild(row_el);
   }
-  tabBar.hidden = false;
+  // tabBar.hidden = false removed — the new TABS status cell owns the count.
+  // The lifecycle rows are still built (so the data path stays intact for
+  // any future debug tool) but the panel itself never renders.
 }
 function recordTabEvent(ev) {
   if (!ev) return;
@@ -94,6 +97,61 @@ function recordTabEvent(ev) {
     seenTabs.set(ev.tabId, { tabId: ev.tabId, kind: ev.kind, url: ev.url, title: ev.title });
   }
   renderTabBar();
+  updateTabCount();
+}
+function updateTabCount() {
+  const cell = document.getElementById('tabCountCell');
+  const value = document.getElementById('tabCountActive');
+  if (!cell || !value) return;
+  const n = seenTabs.size;
+  value.textContent = String(n);
+  // Hide the cell when zero — empty stats are noise.
+  cell.hidden = n === 0;
+}
+
+// ponytail: context utilization cell — backend is the source of truth.
+// The harness emits `{tokens, window, pct}` per step (pct is the actual
+// model-reported usage / model's context window). The frontend just
+// renders the latest values stored on state. The `/context` endpoint
+// fetches the model's window on init so the baseline is right before
+// any step arrives.
+function updateContextUsage() {
+  const cell = document.getElementById('contextCell');
+  const value = document.getElementById('contextValue');
+  if (!cell || !value) return;
+  const { tokens, window, pct } = state.lastContext || {};
+  if (tokens == null || pct == null) {
+    value.textContent = '0%';
+    value.title = window
+      ? `${window.toLocaleString()} tokens window`
+      : 'no context yet';
+    cell.hidden = false;
+    return;
+  }
+  // ponytail: backend emits pct to one decimal. Drop trailing zeros
+  // so 25.0 → "25%", 12.5 → "12.5%", 2.5 → "2.5%".
+  const displayPct = +pct.toFixed(1);
+  value.textContent = `${displayPct}%`;
+  value.title = `${tokens.toLocaleString()} / ${window.toLocaleString()} tokens (${pct}%)`;
+  cell.hidden = false;
+}
+
+// ponytail: ask the SW to fetch the model's context window from the
+// backend. The SW proxies through the configured serverUrl so we don't
+// duplicate that config on the sidepanel. Cached on state.contextWindow
+// after the first hit; called on init and on connect.
+async function fetchContextWindow() {
+  try {
+    const res = await sendMessage({ type: 'get_context' });
+    if (!res || !res.success || !res.context) return;
+    const { window } = res.context;
+    if (typeof window !== 'number') return;
+    state.contextWindow = window;
+    state.contextModel = res.context.model;
+    if (!state.lastContext) state.lastContext = { tokens: null, window, pct: null };
+    else state.lastContext.window = window;
+    updateContextUsage();
+  } catch { /* offline / not running — backend will fill it in */ }
 }
 if (tabBarToggle) {
   tabBarToggle.addEventListener('click', () => {
@@ -127,17 +185,156 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// Minimal markdown renderer for agent output — bold, italic, inline code, links, line breaks.
+// ponytail: small helper to create an icon-only button for the final-answer
+// toolbar. Glyph is rendered as text (no emoji). Clicked-state styling lives
+// in CSS via .clicked.
+// ponytail: Lucide icon paths. License: MIT (https://lucide.dev). Each icon
+// is a focused 24×24 stroke-based glyph that inherits `currentColor` so
+// the .final-answer-icon-btn CSS can recolor on hover / clicked.
+const LUCIDE_ICONS = {
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+  thumbsUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H7a2 2 0 0 1-2-1.88V11.88a2 2 0 0 1 2-2.12l4.32-4.32A2 2 0 0 1 13 4.83V9a2 2 0 0 0 2 2.88z"/></svg>',
+  thumbsDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H17a2 2 0 0 1 2 1.88v8.24a2 2 0 0 1-2 2.12l-4.32 4.32A2 2 0 0 1 11 19.17V15a2 2 0 0 0-2-2.88z"/></svg>',
+  retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
+};
+
+function makeIconBtn(svgContent, title, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'final-answer-icon-btn';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.innerHTML = svgContent;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+// ponytail: store feedback (good/bad) per task in localStorage so the
+// user has a record of what they rated. The orchestrator can read this
+// later if needed.
+function recordFeedback(kind) {
+  try {
+    const stored = JSON.parse(localStorage.getItem('brotto-feedback') || '[]');
+    stored.push({
+      kind,
+      task: state.lastGoal || '',
+      timestamp: Date.now(),
+    });
+    localStorage.setItem('brotto-feedback', JSON.stringify(stored));
+  } catch {}
+}
+
+// ponytail: re-run the same task under a new session. Resets the chat
+// then re-sends the last goal using the same message type the initial
+// task uses (run_local_task). The SW does not have a send_user_message
+// case, so retry used to silently fail. Mirroring run_local_task also
+// guarantees the orchestrator sees a fresh session. The goal must be
+// captured BEFORE resetForNewTask — that fn clears state.lastGoal.
+function retryLastTask() {
+  const goal = state.lastGoal;
+  if (!goal) return;
+  resetForNewTask();
+  void sendMessage({
+    type: 'run_local_task',
+    task: goal,
+    plannerUrl: plannerUrlEl.value || undefined,
+    startingUrl: startingUrlEl.value || undefined,
+  });
+}
+
+// ponytail: clean a URL for chip display. Strips query strings and hash
+// (often auth tokens, session IDs — visually noisy and sometimes
+// sensitive). Falls back to the raw URL if parsing fails. Truncates
+// long paths so the chip stays one line.
+function cleanUrl(url, maxLen = 56) {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    let s = u.hostname + u.pathname;
+    if (s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
+    return s;
+  } catch {
+    return url;
+  }
+}
+
+// Minimal markdown renderer for agent output.
 // HTML-escapes first so injected HTML stays literal; only our own tags get through.
+// Block-level: headers, lists, blockquote, hr. Inline: bold, italic, code, links.
 function renderMarkdown(raw) {
   if (!raw) return '';
-  let s = escapeHtml(String(raw));
-  s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
-  s = s.replace(/\*(.+?)\*/g, '<i>$1</i>');
-  s = s.replace(/`([^`\n]+)`/g, '<code style="background:var(--surface-2);padding:1px 4px;border-radius:3px;font-size:0.88em;font-family:ui-monospace,monospace">$1</code>');
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-  s = s.replace(/\n/g, '<br>');
-  return s;
+  const esc = escapeHtml(String(raw));
+  const lines = esc.split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    // Headers: #, ##, ### (up to ######)
+    const h = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (h) {
+      const level = h[1].length;
+      out.push(`<h${level}>${h[2]}</h${level}>`);
+      i++;
+      continue;
+    }
+    // Horizontal rule
+    if (/^(-{3,}|_{3,}|\*{3,})\s*$/.test(trimmed)) {
+      out.push('<hr>');
+      i++;
+      continue;
+    }
+    // Unordered list — group consecutive `- ` / `* ` / `+ ` items
+    if (/^[-*+]\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^[-*+]\s+/, ''));
+        i++;
+      }
+      out.push('<ul>' + items.map((it) => `<li>${it}</li>`).join('') + '</ul>');
+      continue;
+    }
+    // Ordered list — group consecutive `1. ` items
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^\d+\.\s+/, ''));
+        i++;
+      }
+      out.push('<ol>' + items.map((it) => `<li>${it}</li>`).join('') + '</ol>');
+      continue;
+    }
+    // Blockquote
+    if (/^>\s+/.test(trimmed)) {
+      const bq = [];
+      while (i < lines.length && /^>\s+/.test(lines[i].trim())) {
+        bq.push(lines[i].trim().replace(/^>\s+/, ''));
+        i++;
+      }
+      out.push('<blockquote>' + bq.join('<br>') + '</blockquote>');
+      continue;
+    }
+    // Empty line — paragraph break
+    if (trimmed === '') {
+      out.push('');
+      i++;
+      continue;
+    }
+    // Default: pass the line through (paragraph)
+    out.push(lines[i]);
+    i++;
+  }
+
+  let html = out.join('\n');
+
+  // Inline replacements
+  html = html.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  html = html.replace(/\*(.+?)\*/g, '<i>$1</i>');
+  html = html.replace(/`([^`\n]+)`/g,
+    '<code style="background:var(--surface-2);padding:1px 4px;border-radius:3px;font-size:0.88em;font-family:ui-monospace,monospace">$1</code>');
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+
+  return html;
 }
 
 // ponytail: if the model skipped `reasoning`, derive a sentence from the raw
@@ -167,6 +364,15 @@ function deriveReasoningFromAction(title, iconKind) {
   if (t.startsWith('ask_user_question')) return 'Asking you a question…';
   if (t.startsWith('terminate')) return 'Wrapping up…';
   return t.length > 80 ? `${t.slice(0, 77)}…` : `${t}…`;
+}
+
+// ponytail: formatToolCall is no longer used — tool call names are rendered
+// inline in the step_card message handler. Kept as a placeholder if the
+// tooling needs to expand later. The details panel only shows the names
+// (e.g. "navigate, append_scratchpad") when the step had multiple actions.
+function formatToolCall(a) {
+  if (!a || typeof a.action !== 'string') return '';
+  return a.action;
 }
 
 // ── SW keep-alive (MV3) ──────────────────────────────────────────────────
@@ -215,6 +421,12 @@ goalEl.addEventListener('input', () => {
   goalEl.style.height = 'auto';
   goalEl.style.height = Math.min(goalEl.scrollHeight, 120) + 'px';
 });
+
+// ponytail: render the CONTEXT cell once on load so the value is owned
+// by JS (not just the static HTML default). Then ask the backend for
+// the model's context window so the 0% tooltip names the right baseline.
+updateContextUsage();
+void fetchContextWindow();
 
 async function sendUserMessage() {
   const text = goalEl.value.trim();
@@ -274,7 +486,8 @@ async function ensureConnected() {
   const response = await fetch(url + '/health', { method: 'GET' });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   setPhase('connected', null);
-  appendMessage({ role: 'system', text: `Connected to planner at ${url}` });
+  // Status pill in the header already conveys connection state; no
+  // separate chat-line clutter.
 }
 
 async function resetForNewTask() {
@@ -396,7 +609,7 @@ function clearMessages() {
     empty.id = 'emptyState';
     empty.className = 'empty-state';
     empty.innerHTML =
-      '<div class="empty-mark"><svg class="brand-mark brand-mark--lg" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/><path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/></svg></div>' +
+      '<div class="empty-mark"><img src="assets/logo.svg" alt="Inventic" class="brand-logo brand-logo--lg"></div>' +
       '<div class="empty-title">Brotto</div>' +
       '<div class="empty-sub">Describe what you\'d like to do in your browser and Brotto will get it done for you.</div>';
     messagesEl.appendChild(empty);
@@ -414,7 +627,7 @@ async function connect() {
     state.plannerUrl = url;
     plannerUrlEl.value = url;
     setPhase('connected', null);
-    appendMessage({ role: 'system', text: `Connected to planner at ${url}` });
+    // Status pill already shows connection; no chat line.
   } catch (err) {
     state.plannerUrl = '';
     setPhase('error', `Connect failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -546,7 +759,7 @@ function createEmptyState() {
   const div = document.createElement('div');
   div.className = 'empty-state';
   div.innerHTML = `
-    <div class="empty-mark"><svg class="brand-mark brand-mark--lg" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/><path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/></svg></div>
+    <div class="empty-mark"><img src="assets/logo.svg" alt="Inventic" class="brand-logo brand-logo--lg"></div>
     <div class="empty-title">Brotto</div>
     <div class="empty-sub">Describe what you'd like to do in your browser and Brotto will get it done for you.</div>
   `;
@@ -615,27 +828,89 @@ function appendMessage({ role, text, inlineLogs, finalAnswer }) {
   } else if (role === 'error') {
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.innerHTML = `<strong>Error:</strong> ${text}`;
+    bubble.textContent = text;
     msg.appendChild(bubble);
   } else if (role === 'done') {
     const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    // ponytail: clean done-message layout. finalAnswer is the model's
-    // plain-English answer — show it as the primary content. Below it,
-    // extract structured facts (URLs, order IDs, tracking IDs, dates)
-    // as a clean list. Avoid duplicating the answer in a summary line.
-    const stepsMatch = (text || '').match(/^(\d+)\s*steps?\b/i);
-    const stepCount = stepsMatch ? stepsMatch[1] : '';
-    const finalAnswerHtml = finalAnswer
-      ? `<div class="final-answer"><div class="final-answer-text">${renderMarkdown(finalAnswer)}</div></div>`
-      : '';
-    const factsHtml = finalAnswer ? renderFacts(finalAnswer) : '';
-    const captionHtml =
-      `<div class="done-caption">` +
-      `<span class="done-icon">&#10003;</span> Task completed` +
-      (stepCount ? ` &middot; ${stepCount} steps` : '') +
-      `</div>`;
-    bubble.innerHTML = finalAnswerHtml + factsHtml + captionHtml;
+    bubble.className = 'bubble final-answer-bubble';
+
+    if (finalAnswer) {
+      const fa = document.createElement('div');
+      fa.className = 'final-answer';
+      const faText = document.createElement('div');
+      faText.className = 'final-answer-text';
+      faText.innerHTML = renderMarkdown(finalAnswer);
+      fa.appendChild(faText);
+      bubble.appendChild(fa);
+    }
+
+    // ponytail: bottom toolbar with feedback icons. Four icons — Copy,
+    // Good (thumbs up), Bad (thumbs down), Retry — give the user a
+    // single place to copy the answer, rate it, or re-run the same
+    // task under a new session. The "Task completed · N steps" caption
+    // is gone — the icon row replaces it.
+    const toolbar = document.createElement('div');
+    toolbar.className = 'final-answer-toolbar';
+
+    if (finalAnswer) {
+      // ponytail: copy includes the task + the final answer in a clean
+      // markdown-style block. The user said "Show prompts as well when
+      // copied the response" — the task is the prompt they sent, so
+      // including it makes the copy self-contained when shared.
+      const copyText = state.lastGoal
+        ? `**Task:** ${state.lastGoal}\n\n**Response:**\n${finalAnswer}`
+        : finalAnswer;
+      const copyBtn = makeIconBtn(LUCIDE_ICONS.copy, 'Copy', async (ev) => {
+        ev.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(copyText);
+        } catch {
+          const ta = document.createElement('textarea');
+          ta.value = copyText;
+          ta.style.cssText = 'position:fixed;opacity:0';
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); } catch {}
+          document.body.removeChild(ta);
+        }
+        copyBtn.classList.add('clicked');
+        setTimeout(() => copyBtn.classList.remove('clicked'), 1200);
+      });
+      toolbar.appendChild(copyBtn);
+    }
+
+    // ponytail: good/bad ratings are persistent and mutually exclusive.
+    // Click toggles its own state — clicking the other deactivates the
+    // first. The .rated-good / .rated-bad classes stay until the user
+    // clicks again to clear.
+    const goodBtn = makeIconBtn(LUCIDE_ICONS.thumbsUp, 'Good response', () => {
+      if (goodBtn.classList.contains('rated-good')) {
+        goodBtn.classList.remove('rated-good');
+        return;
+      }
+      badBtn.classList.remove('rated-bad');
+      goodBtn.classList.add('rated-good');
+      recordFeedback('good');
+    });
+    toolbar.appendChild(goodBtn);
+
+    const badBtn = makeIconBtn(LUCIDE_ICONS.thumbsDown, 'Bad response', () => {
+      if (badBtn.classList.contains('rated-bad')) {
+        badBtn.classList.remove('rated-bad');
+        return;
+      }
+      goodBtn.classList.remove('rated-good');
+      badBtn.classList.add('rated-bad');
+      recordFeedback('bad');
+    });
+    toolbar.appendChild(badBtn);
+
+    const retryBtn = makeIconBtn(LUCIDE_ICONS.retry, 'Retry', () => {
+      retryLastTask();
+    });
+    toolbar.appendChild(retryBtn);
+
+    bubble.appendChild(toolbar);
     msg.appendChild(bubble);
   }
 
@@ -721,23 +996,24 @@ function appendStepWithDetails({ icon, text, details, pageUrl, pageTitle, action
   const bubble = document.createElement('div');
   bubble.className = 'bubble step-bubble';
 
-  // ponytail: page context chip — shows what the agent was looking at
-  // when it decided this action. Without this, the agent's reasoning
-  // ("the browser is on a blank page") reads as out-of-date by the time
-  // the user sees the bubble, because the page has already changed.
-  // Anchoring each step to its captured page state removes the temporal
-  // disconnect between reasoning text and visible browser tab.
-  const domainOf = (url) => { try { return new URL(url).hostname; } catch { return url; } };
-  if (pageUrl) {
+  // ponytail: page/action chips. The page chip shows the URL the agent
+  // was on (cleanUrl strips query/hash to avoid tokens in the chat).
+  // The action chip shows the URL the agent was navigating to. When
+  // navigated across the same domain to a different path, both chips
+  // still differentiate via the path — keeping the host-only render
+  // would have collapsed them to the same string.
+  const pageClean = cleanUrl(pageUrl);
+  const actionClean = cleanUrl(actionTarget);
+  if (pageClean) {
     const chip = document.createElement('div');
     chip.className = 'step-page-chip';
-    chip.innerHTML = `<span class="step-page-chip-icon">&#9655;</span><span class="step-page-chip-url">${escapeHtml(domainOf(pageUrl))}</span>`;
+    chip.innerHTML = `<span class="step-page-chip-icon">&#9655;</span><span class="step-page-chip-url">${escapeHtml(pageClean)}</span>`;
     bubble.appendChild(chip);
   }
-  if (actionTarget) {
+  if (actionClean && actionClean !== pageClean) {
     const dest = document.createElement('div');
     dest.className = 'step-page-chip';
-    dest.innerHTML = `<span class="step-page-chip-icon">&#8594;</span><span class="step-page-chip-url">${escapeHtml(domainOf(actionTarget))}</span>`;
+    dest.innerHTML = `<span class="step-page-chip-icon">&#8594;</span><span class="step-page-chip-url">${escapeHtml(actionClean)}</span>`;
     bubble.appendChild(dest);
   }
 
@@ -864,7 +1140,7 @@ function appendClarifyCard({ id, question, reason }) {
   if (question) {
     const body = document.createElement('div');
     body.className = 'clarify-body';
-    body.textContent = question;
+    body.innerHTML = renderMarkdown(question);
     card.appendChild(body);
   }
 
@@ -1083,20 +1359,30 @@ chrome.runtime.onMessage.addListener((message) => {
       const bubbleTitle = (message.clientText && message.clientText.trim())
         || (message.reasoning && message.reasoning.trim())
         || deriveReasoningFromAction(message.title || '', message.iconKind);
-      // ponytail: the details panel shows the raw tool call AND, when present,
-      // the model's internal reasoning — so the operator can drill in for
-      // debugging while the user-facing chat stays clean.
-      const detailsLines = [`${message.title || ''}${message.result ? ' → ' + message.result : ''}`.trim()];
-      if (message.reasoning && message.clientText && message.reasoning.trim() !== message.clientText.trim()) {
-        detailsLines.push(`--- reasoning ---\n${message.reasoning.trim()}`);
-      }
-      const details = detailsLines.filter(Boolean).join('\n');
+      // ponytail: the details panel shows tool call names ONLY when the
+      // step had multiple actions. Single-action steps keep the bubble
+      // content as the only detail (the raw tool call args are hidden —
+      // the user said they don't want to see complete tool calls).
+      // Multi-action steps list the names joined by ", " so the operator
+      // can see at a glance which tools fired in this batch.
+      const actions = Array.isArray(message.actions) ? message.actions : [];
+      const details = actions.length > 1
+        ? actions.map(a => a.action).filter(Boolean).join(', ')
+        : '';
       // ponytail: each step gets its OWN persistent bubble. clientText is the
       // bubble title; raw tool call + reasoning live behind a "details"
       // toggle so the chat reads naturally and the operator can drill in
       // when debugging. Icon is passed separately so HTML entities decode
       // instead of rendering as literal `&#8594;`.
       appendStepWithDetails({ icon, text: bubbleTitle, details, ts: message.ts, pageUrl: message.url, pageTitle: message.pageTitle, actionTarget: message.actionTarget ?? null });
+      // Track context utilization for the CONTEXT cell. Backend ships
+      // `{tokens, window, pct}` per step (pct is the model-reported
+      // usage / model's context window). Frontend just stores and
+      // renders — no math here.
+      if (message.context && typeof message.context === 'object') {
+        state.lastContext = message.context;
+      }
+      updateContextUsage();
       break;
     }
 
@@ -1154,6 +1440,17 @@ chrome.runtime.onMessage.addListener((message) => {
       messagesEl.scrollTop = messagesEl.scrollHeight;
       break;
 
+    case 'context_update': {
+      // ponytail: scratchpad-only step (no external action visible to
+      // bubble). Backend still emits context so the CONTEXT cell updates
+      // on every step.
+      if (message.context && typeof message.context === 'object') {
+        state.lastContext = message.context;
+      }
+      updateContextUsage();
+      break;
+    }
+
     case 'task_completed':
       // ponytail: clear any lingering login prompt — task is ending, no
       // point leaving the user looking at a "Waiting for sign-in" bubble.
@@ -1194,10 +1491,15 @@ chrome.runtime.onMessage.addListener((message) => {
       // after the task has failed / been cancelled.
       clearLoginPrompt();
       stopTimer();
-      setPhase('error', message.message || 'Task failed');
+      // The orchestrator sends summary (the agent's `cannot_complete`
+      // reason) and failure_reason (same value). Show the human message
+      // directly — no "Error:" prefix, the red bubble already conveys
+      // the failure.
+      const failMsg = message.failure_reason || message.summary || 'Task failed';
+      setPhase('error', failMsg);
       appendMessage({
         role: 'error',
-        text: `${message.code || 'Error'}: ${message.message || 'Task failed'}`,
+        text: failMsg,
       });
       break;
 

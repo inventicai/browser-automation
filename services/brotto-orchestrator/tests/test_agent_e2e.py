@@ -110,9 +110,9 @@ async def test_harness_completes_with_test_model():
             custom_output_args={
                 "reasoning": "Page loaded successfully",
                 "thought": "Page loaded",
-                "action": "task_complete",
-                "action_args": {"summary": "Page loaded", "extracted_data": None},
-                "scratchpad_update": None,
+                "actions": [
+                    {"action": "task_complete", "action_args": {"summary": "Page loaded", "extracted_data": None}},
+                ],
             },
         ),
         output_type=AgentDecision,
@@ -179,9 +179,9 @@ async def test_harness_blocks_on_approval_when_queue_is_empty():
             custom_output_args={
                 "reasoning": "destructive action",
                 "thought": "clicking delete",
-                "action": "click",
-                "action_args": {"ref": "btn_del", "description": "delete account"},
-                "scratchpad_update": None,
+                "actions": [
+                    {"action": "click", "action_args": {"ref": "btn_del", "description": "delete account"}},
+                ],
             },
         ),
         output_type=AgentDecision,
@@ -250,9 +250,9 @@ async def test_harness_unblocks_when_approval_sentinel_is_queued():
             custom_output_args={
                 "reasoning": "destructive action",
                 "thought": "clicking delete",
-                "action": "click",
-                "action_args": {"ref": "btn_del", "description": "delete account"},
-                "scratchpad_update": None,
+                "actions": [
+                    {"action": "click", "action_args": {"ref": "btn_del", "description": "delete account"}},
+                ],
             },
         ),
         output_type=AgentDecision,

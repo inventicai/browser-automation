@@ -151,10 +151,41 @@ class ExtensionCDPRelay:
         await self._send_action({"type": "type", "text": text})
         return f"Typed into [{ref}]"
 
-    async def read_page_text(self, selector: str = "body", max_chars: int = 3000) -> str:
-        sel = selector.replace('"', '\\"')
-        expr = f'(document.querySelector("{sel}") || document.body).innerText.substring(0, {max_chars})'
-        log.info("[%s] read_page_text  selector=%r", self._sid, selector)
+    async def read_page_text(
+        self,
+        selector: str = "body",
+        max_chars: int = 2000,
+        around: str | None = None,
+    ) -> str:
+        """Read visible text from a page section.
+
+        - selector: CSS selector (default "body")
+        - max_chars: cap on returned chars (default 2000)
+        - around: optional keyword; the read is centered on the first
+          case-insensitive match. Falls back to top of body if no match.
+        """
+        # json.dumps produces a correctly-escaped JS string literal for
+        # backslashes, quotes, newlines, and control chars. Embedding the
+        # escaped form directly into the JS source avoids any string-breakout
+        # for adversarial inputs (e.g. a selector containing `"` or `;`).
+        import json as _json
+        sel_js = _json.dumps(selector)
+        if around:
+            around_js = _json.dumps(around)
+            half = max_chars // 2
+            expr = f"""(() => {{
+              const t = (document.querySelector({sel_js}) || document.body).innerText;
+              const i = t.toLowerCase().indexOf({around_js}.toLowerCase());
+              if (i < 0) return t.substring(0, {max_chars});
+              const start = Math.max(0, i - {half});
+              return t.substring(start, start + {max_chars});
+            }})()"""
+        else:
+            expr = f'(document.querySelector({sel_js}) || document.body).innerText.substring(0, {max_chars})'
+        log.info(
+            "[%s] read_page_text  selector=%r  around=%r  max_chars=%d",
+            self._sid, selector, around, max_chars,
+        )
         await self._ws_send({"type": "evaluate", "expression": expr})
         try:
             text = await asyncio.wait_for(self._eval_queue.get(), timeout=15)

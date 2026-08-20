@@ -55,7 +55,9 @@ services/brotto-orchestrator/node_modules/
 # CRX signing — local-only, regenerate per developer.
 clients/brotto-extension/crx-signing.pem
 
-# Internal artifacts — not for the public repo.
-assets/
-docs/
-CLAUDE.md
+# Internal artifacts — not for the public repo. Scoped to repo root so
+# the extension's own src/assets/ (brand mark, etc.) is unaffected.
+# The extension's brand assets are public and committed.
+/assets/
+/docs/
+/CLAUDE.md
