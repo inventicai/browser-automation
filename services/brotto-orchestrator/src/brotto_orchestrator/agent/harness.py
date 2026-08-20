@@ -51,6 +51,24 @@ TIMING_BUCKETS = (
 )
 
 _MODEL = os.getenv("AGENT_MODEL", "no-model")
+# Context window size (tokens) used for the side panel's CONTEXT cell
+# (% of context used). Override per model in .env. Defaults to 400k.
+_CONTEXT_WINDOW_TOKENS = int(os.getenv("CONTEXT_WINDOW_TOKENS", "400000"))
+
+
+def _build_context(tokens: int | None) -> dict:
+    """Build the context payload the side panel renders.
+
+    The cell shows `pct` (and tooltip `tokens` / `window`) — all math
+    lives here so the frontend is a dumb display. `tokens` may be None
+    when the model hasn't been called yet (e.g. before step 1); we
+    return null pct so the cell shows "0%" via the frontend's
+    null-tokens branch.
+    """
+    if tokens is None or tokens < 0:
+        return {"tokens": None, "window": _CONTEXT_WINDOW_TOKENS, "pct": None}
+    pct = round((tokens / _CONTEXT_WINDOW_TOKENS) * 100, 1) if _CONTEXT_WINDOW_TOKENS else 0
+    return {"tokens": tokens, "window": _CONTEXT_WINDOW_TOKENS, "pct": pct}
 
 
 def _build_agent() -> Agent[AgentDeps, AgentDecision]:
@@ -439,7 +457,18 @@ class AgentHarness:
             # echoed at the top level for the icon + chip. Internal actions
             # (scratchpad) are still silent — they're metadata, not tool calls
             # the user sees.
+            #
+            # ponytail: actual `result.usage` from pydantic-ai (the model
+            # provider's reported token count, not a `len(prompt) // 4`
+            # approximation). The backend computes the percentage so the
+            # frontend is a dumb display. `usage` is a property, not a method.
             t_ws = time.perf_counter()
+            try:
+                usage = result.usage
+                tokens_used = usage.input_tokens if usage else None
+            except Exception:
+                tokens_used = None
+            context = _build_context(tokens_used)
             external = [c for c in decision.actions if c.action not in _INTERNAL_ACTIONS]
             if external:
                 actions_payload = [
@@ -459,6 +488,15 @@ class AgentHarness:
                     "actions": actions_payload,
                     "thought": decision.thought,
                     "url": current_url,
+                    "context": context,
+                })
+            else:
+                # ponytail: no external actions this step (e.g. a
+                # scratchpad-only step). Still emit context so the sidepanel
+                # utilization % updates on every step.
+                await deps.ws_send({
+                    "type": "context_update",
+                    "context": context,
                 })
             timings["ws_send_progress"] += time.perf_counter() - t_ws
 

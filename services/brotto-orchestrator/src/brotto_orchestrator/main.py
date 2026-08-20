@@ -63,6 +63,16 @@ async def health():
     return {"status": "ok", "service": "brotto-orchestrator", "version": "2.0.0", "model": _MODEL}
 
 
+# ponytail: sidepanel fetches this on init so the CONTEXT cell shows the
+# right baseline (the server's current model's window) before any
+# step_progress arrives. The frontend never computes the percentage —
+# the harness emits a pre-computed `pct` on every step.
+@app.get("/context")
+async def context_limit():
+    from .agent.harness import _MODEL, _CONTEXT_WINDOW_TOKENS
+    return {"model": _MODEL, "window": _CONTEXT_WINDOW_TOKENS}
+
+
 # ---------------------------------------------------------------------------
 # Session creation — called by the extension before connecting WS
 # ---------------------------------------------------------------------------
