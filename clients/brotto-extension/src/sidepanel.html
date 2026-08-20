@@ -87,13 +87,13 @@
     #connectionMeta { display: none !important; }
 
     /* ─── Brand mark (Inventic mountain) ────────────────────────────────── */
-    .brand-mark {
+    .brand-logo {
       width: 24px;
       height: 24px;
       flex-shrink: 0;
       display: block;
     }
-    .brand-mark--lg { width: 56px; height: 56px; }
+    .brand-logo--lg { width: 56px; height: 56px; }
 
     /* ─── Header ────────────────────────────────────────────────────────── */
     header {
@@ -149,7 +149,7 @@
     /* ─── Status bar (steps + timer) ────────────────────────────────────── */
     #statusBar {
       display: none;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, 1fr);
       gap: 1px;
       background: var(--border);
       border-bottom: 1px solid var(--border);
@@ -613,7 +613,8 @@
     .message.done .bubble {
       background: var(--green-soft);
       color: var(--green);
-      border: 1px solid rgba(22, 163, 74, 0.18);
+      border: 1px solid rgba(22, 163, 74, 0.30);
+      border-left: 4px solid var(--green);
       border-radius: var(--radius);
       padding: 12px 16px;
     }
@@ -632,7 +633,10 @@
     .message.error .bubble {
       background: var(--red-soft);
       color: var(--red);
-      border: 1px solid rgba(220, 38, 38, 0.18);
+      border: 1px solid rgba(220, 38, 38, 0.30);
+      border-left: 4px solid var(--red);
+      border-radius: var(--radius);
+      padding: 12px 16px;
     }
 
     /* ─── Plan preview card ───────────────────────────────────────────── */
@@ -976,6 +980,101 @@
     /* ─── Final answer / facts ───────────────────────────────────────── */
     .final-answer { font-size: 14px; line-height: 1.5; padding: 4px 0 12px; color: var(--text); }
     .final-answer-text { font-weight: 500; }
+    /* Final-answer toolbar — 4 icon buttons at the bottom (Copy, Good,
+       Bad, Retry). Replaces the old "Task completed · N steps" caption. */
+    .final-answer-toolbar {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .final-answer-icon-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: 12px;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      line-height: 1;
+      font-family: 'Inter', sans-serif;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .final-answer-icon-btn svg {
+      width: 13px;
+      height: 13px;
+      display: block;
+    }
+    .final-answer-icon-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+    .final-answer-icon-btn.clicked {
+      background: var(--green-soft);
+      border-color: var(--green);
+      color: var(--green);
+    }
+    /* ponytail: persistent rated states for good/bad. The clicked
+       class is a brief flash; rated-good / rated-bad stay until the
+       user clicks again (toggle). They're mutually exclusive. */
+    .final-answer-icon-btn.rated-good {
+      background: var(--green-soft);
+      border-color: var(--green);
+      color: var(--green);
+    }
+    .final-answer-icon-btn.rated-bad {
+      background: var(--red-soft);
+      border-color: var(--red);
+      color: var(--red);
+    }
+    /* Markdown rendered inside the final answer (and any other bubble).
+       Compact chat-friendly sizes — not document defaults. */
+    .bubble h1, .bubble h2, .bubble h3, .bubble h4 {
+      margin: 10px 0 4px;
+      font-weight: 600;
+      line-height: 1.25;
+      color: var(--text);
+    }
+    .bubble h1 { font-size: 17px; }
+    .bubble h2 { font-size: 15px; }
+    .bubble h3 { font-size: 14px; }
+    .bubble h4 { font-size: 13px; }
+    .bubble ul, .bubble ol {
+      margin: 4px 0 4px 0;
+      padding-left: 22px;
+    }
+    .bubble li { margin: 2px 0; line-height: 1.4; }
+    .bubble blockquote {
+      margin: 6px 0;
+      padding: 4px 12px;
+      border-left: 3px solid var(--border);
+      color: var(--text-muted);
+      background: var(--surface-2);
+      border-radius: 0 4px 4px 0;
+    }
+    .bubble hr {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 10px 0;
+    }
+    .bubble pre {
+      background: var(--surface-2);
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+    .bubble pre code {
+      background: transparent;
+      padding: 0;
+      font-size: inherit;
+    }
 
     .step-page-chip {
       display: flex;
@@ -991,7 +1090,7 @@
       white-space: nowrap;
     }
     .step-page-chip-icon { color: var(--brand-primary); flex-shrink: 0; }
-    .step-page-chip-url { font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: var(--text-muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+    .step-page-chip-url { font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: var(--text-muted); font-style: italic; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .step-page-chip-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 
     .facts {
@@ -1050,11 +1149,7 @@
 <!-- ── Header ────────────────────────────────────────────────────────── -->
 <header>
   <div class="brand">
-    <!-- Inventic mountain mark: primary peak + secondary light-blue peak -->
-    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-      <path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/>
-      <path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/>
-    </svg>
+    <img id="brandLogo" class="brand-logo" src="assets/logo.svg" alt="Inventic">
     <span class="brand-name">Brotto</span>
   </div>
 
@@ -1086,7 +1181,7 @@
 <span id="stepCount" style="display:none">0 steps</span>
 <span id="timer" style="display:none"></span>
 
-<!-- ── Status bar (steps + timer) ──────────────────────────────────── -->
+<!-- ── Status bar (steps + timer + tabs) ──────────────────────────── -->
 <div id="statusBar" aria-live="polite">
   <div class="cell">
     <span class="label">Steps</span>
@@ -1095,6 +1190,14 @@
   <div class="cell">
     <span class="label">Time</span>
     <span class="value" id="timerActive">0.0s</span>
+  </div>
+  <div class="cell" id="tabCountCell" hidden>
+    <span class="label">Tabs</span>
+    <span class="value" id="tabCountActive">0</span>
+  </div>
+  <div class="cell" id="contextCell">
+    <span class="label">Context</span>
+    <span class="value" id="contextValue">0%</span>
   </div>
 </div>
 
@@ -1111,10 +1214,7 @@
 <main id="messages" aria-live="polite">
   <div class="empty-state" id="emptyState">
     <div class="empty-mark">
-      <svg class="brand-mark brand-mark--lg" viewBox="0 0 32 32" aria-hidden="true">
-        <path d="M5 24 L14 8 L18 14 L23 19 L26 22 Z" fill="#0052CC"/>
-        <path d="M18 14 L23 19 L26 22 L24 22 L19 18 Z" fill="#6DB3D8"/>
-      </svg>
+      <img src="assets/logo.svg" alt="Inventic" class="brand-logo brand-logo--lg">
     </div>
     <div class="empty-title">Brotto</div>
     <div class="empty-sub">Describe what you'd like to do in your browser and Brotto will get it done for you.</div>
