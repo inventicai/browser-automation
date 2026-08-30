@@ -41,9 +41,49 @@ async def test_no_stagnation_with_progress():
 def test_login_guardrail():
     from brotto_orchestrator.agent.guardrails import check_login_page
 
+    # Title alone is authoritative.
     assert check_login_page("Sign In", "", "")
-    assert check_login_page("Dashboard", "password textbox", "")
+    # AX strong marker + URL corroboration (login path) → fires.
+    assert check_login_page("Dashboard", "password textbox", "https://app.com/login")
+    # AX strong marker + title corroboration → fires.
+    assert check_login_page("Sign In", "password textbox", "https://app.com/home")
+    # AX strong marker alone (no title/URL corroboration) → does NOT fire.
+    # This is the Gmail/Google-search false-positive guard: "password"
+    # appearing in the AX tree by itself is treated as incidental.
+    assert not check_login_page("Dashboard", "password textbox", "https://app.com/home")
+    # Nothing login-ish.
     assert not check_login_page("Dashboard", "welcome", "http://app.com/home")
+
+
+def test_login_guardrail_gmail_google_false_positive():
+    """Regression: Google Search has 'password' in AX (password manager
+    UI) and Gmail has 'oauth' (analytics tags), but neither is a login
+    page. The old heuristic fired on those markers alone and prompted
+    the user to sign in mid-task on already-signed-in Gmail.
+    """
+    from brotto_orchestrator.agent.guardrails import check_login_page
+
+    # Google search page — password manager surfaces a "password" button.
+    google_ax = (
+        '[1] button "Google apps" '
+        '[2] link "Sign in" '
+        '[3] combobox "Search" '
+        '[4] button "Use password manager to autofill"'
+    )
+    assert not check_login_page("Google", google_ax, "https://www.google.com/")
+
+    # Gmail signed-in inbox — OAuth mentions in integration cards.
+    gmail_ax = (
+        '[1] link "Compose" '
+        '[2] link "Inbox" '
+        '[3] button "Connected via OAuth to Calendar" '
+        '[4] button "Sign in to another account"'
+    )
+    assert not check_login_page(
+        "Inbox - user@gmail.com - Gmail",
+        gmail_ax,
+        "https://mail.google.com/mail/u/0/#inbox",
+    )
 
 
 def test_critical_action_guardrail():

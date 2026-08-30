@@ -23,17 +23,25 @@ from .cdp.watchdog import CDPWatchdog
 from .session.auth import validate_token
 from .session.observation_validator import validate_observation
 from .session.registry import SessionRegistry
+from .policy import Policy, UserPolicy, load_policy, merge as merge_policy
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
+_LOG_LEVEL = os.getenv("BROTTO_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("brotto.main")
+
+# ponytail: match the sidepanel's MAX_TASK_CHARS. Anything over this is
+# logged as a warning (defense in depth) but NOT blocked — the sidepanel
+# already shows a confirm() dialog, and the user is the final authority
+# on what they want the agent to do.
+MAX_TASK_CHARS = 1000
 
 # Quiet noisy third-party loggers
 for _noisy in ("httpx", "httpcore", "websockets", "uvicorn.access"):
@@ -55,12 +63,77 @@ app.add_middleware(
 registry = SessionRegistry()
 harness = AgentHarness()
 
+# ponytail: hydrate persisted user policies so the in-memory cache
+# survives a server restart. Without this, GET /v1/policy right after
+# boot would return floor-only even for returning users. Loaded once
+# at startup; written to disk by `persist_user_policy()` below.
+try:
+    from .policy import persist as _user_policy_persist
+    _loaded = registry.hydrate_user_policies(_user_policy_persist.load_all())
+    _dir = _user_policy_persist.directory_path()
+    log.info(
+        "user-policy persistence: dir=%s  hydrated=%d",
+        _dir.resolve(), _loaded,
+    )
+except Exception as exc:
+    log.warning("user-policy hydrate failed (continuing without): %s", exc)
+
+# Floor policy: loaded once at startup. Used as the org-wide minimum that
+# user policies can raise but never lower. None when no file is configured.
+FLOOR_POLICY: Policy | None = load_policy()
+if FLOOR_POLICY is not None:
+    log.info("loaded floor policy  mode=%s  blacklist=%d",
+             FLOOR_POLICY.mode, len(FLOOR_POLICY.blacklist))
+else:
+    log.info("no floor policy file (BROTTO_POLICY_FILE unset and ./policy.json absent); user toggle is authoritative")
+
 
 @app.get("/health")
 async def health():
     log.debug("health check")
     from .agent.harness import _MODEL
-    return {"status": "ok", "service": "brotto-orchestrator", "version": "2.0.0", "model": _MODEL}
+    policy_summary = None
+    if FLOOR_POLICY is not None:
+        policy_summary = {
+            "mode": FLOOR_POLICY.mode,
+            "blacklist_count": len(FLOOR_POLICY.blacklist),
+            "first_time_seen_prompt": FLOOR_POLICY.first_time_seen_prompt,
+            "sensitive_actions_count": len(FLOOR_POLICY.sensitive_actions),
+        }
+    return {
+        "status": "ok",
+        "service": "brotto-orchestrator",
+        "version": "2.0.0",
+        "model": _MODEL,
+        "policy": policy_summary,
+    }
+
+
+def _persist_user_policy(user_key: str, payload: dict | None) -> None:
+    """Best-effort write of the user's last-known policy to disk.
+
+    Calls `save_if_changed` so a no-op Save click (same content) does
+    NOT bump the on-disk mtime — the sidepanel's "Last verified" badge
+    stays accurate and we avoid needless disk IO. A WARNING is logged
+    on disk failures; the in-memory cache still works for the current
+    run, but the next restart will lose the change.
+    """
+    if payload is None:
+        return
+    try:
+        from .policy import persist as _user_policy_persist
+        wrote = _user_policy_persist.save_if_changed(user_key, payload)
+        if wrote:
+            log.info(
+                "user-policy saved  user_key=%s  blacklist=%s  mode=%s",
+                user_key,
+                payload.get("blacklist"),
+                payload.get("mode"),
+            )
+        # else: silent no-op save; this is the common case when the
+        # user clicks Save without changing anything.
+    except Exception as exc:
+        log.warning("failed to persist user policy for %s: %s", user_key, exc)
 
 
 # ponytail: sidepanel fetches this on init so the CONTEXT cell shows the
@@ -71,6 +144,41 @@ async def health():
 async def context_limit():
     from .agent.harness import _MODEL, _CONTEXT_WINDOW_TOKENS
     return {"model": _MODEL, "window": _CONTEXT_WINDOW_TOKENS}
+
+
+# ponytail: GET /v1/policy returns the EFFECTIVE policy the server will
+# enforce for this caller — union of floor + last-known user policy. The
+# extension calls this on Settings open so the sidepanel can render the
+# floor as a locked read-only block alongside the user's editable list.
+# Unauthenticated (same as /health) — payload only contains domain lists,
+# not secrets; this is fine for the demo. Add auth before any production
+# deployment.
+@app.get("/v1/policy")
+async def get_effective_policy(request: Request):
+    from .policy import UserPolicy
+    # Caller identity: prefer explicit query, fall back to client IP
+    # (SessionRegistry tracks per-IP for the lifetime of the server).
+    caller = request.query_params.get("user_id") or (
+        request.client.host if request.client else "unknown"
+    )
+    user_payload = registry.get_user_policy_payload(caller)
+    user_pol: UserPolicy | None = None
+    if isinstance(user_payload, dict):
+        try:
+            user_pol = UserPolicy.model_validate(user_payload)
+        except Exception:
+            user_pol = None
+    effective = merge_policy(FLOOR_POLICY, user_pol)
+    return JSONResponse(content={
+        "mode": effective.mode,
+        "blacklist": effective.blacklist,
+        "sensitive_actions": effective.sensitive_actions,
+        "source": {
+            "floor": list(FLOOR_POLICY.blacklist) if FLOOR_POLICY else [],
+            "user": list(user_pol.blacklist) if user_pol else [],
+        },
+        "caller": caller,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +196,39 @@ async def create_session(request: Request):
         "websocket_url": ws_url,
         "server_url": "http://localhost:8000",
     })
+
+
+# ponytail: separate HTTP endpoint for save-time notification. The
+# WS-based `policy_acknowledged` only works while a task is in flight;
+# this one logs even when the user clicks Save with no task running.
+@app.post("/v1/policy_ack")
+async def policy_ack(request: Request):
+    body = await request.json()
+    settings = body.get("settings") or {}
+    user_id = body.get("user_id") or request.client.host if request.client else "unknown"
+    mode = settings.get("mode")
+    blacklist = settings.get("blacklist") or []
+    # Mirror on the session registry so a later GET /v1/policy returns
+    # this user's view (handles the "Save with no WS open" case from
+    # the audit work earlier). Persist to disk too.
+    snapshot = {"mode": mode, "blacklist": blacklist}
+    registry.set_user_policy(user_id, snapshot)
+    _persist_user_policy(user_id, snapshot)
+    log.warning(
+        "[%s] POLICY: user saved settings  mode=%s  blacklist=%s",
+        user_id, mode, blacklist,
+    )
+    try:
+        from .agent.run_logger import append_policy_event
+        append_policy_event(
+            f"client-{user_id}",
+            step=None, kind="policy_acknowledged",
+            domain=None, action=None,
+            decision=f"mode={mode}  blacklist={blacklist}",
+        )
+    except Exception as exc:
+        log.warning("failed to persist policy_acknowledged: %s", exc)
+    return JSONResponse(content={"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +280,14 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
             log.warning("[%s] task_start with empty task — closing", session_id)
             await websocket.close(code=4000)
             return
+        if len(task) > MAX_TASK_CHARS:
+            # Defense in depth — the sidepanel already showed a confirm().
+            # Server logs so the audit trail records the unusually-long
+            # input. No block: the user's intent is the final word.
+            log.warning(
+                "[%s] task_start exceeds %d chars (%d) — prompt-injection risk",
+                session_id, MAX_TASK_CHARS, len(task),
+            )
         log.info("[%s] task_start  task=%r", session_id, task[:100])
     except asyncio.TimeoutError:
         log.warning("[%s] timed out waiting for task_start", session_id)
@@ -151,17 +300,64 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
 
     eval_queue: asyncio.Queue = asyncio.Queue()
     relay = ExtensionCDPRelay(ws_send, obs_queue, eval_queue, session_id)
+
+    # ponytail: key policy storage by CLIENT IP, not session_id. session_id
+    # is fresh per /v1/sessions call, so anything stashed under it is dead
+    # the moment the next task opens a new session. IP is the closest thing
+    # to "user identity" we have without auth, and matches the key used
+    # by /v1/policy GET and /v1/policy_ack — making the three callers
+    # finally agree.
+    client_host = websocket.client.host if websocket.client else "unknown"
+
+    # Merge floor + user policy. Server floor wins on mode; lists union.
+    user_policy_payload = msg.get("user_policy")
+    user_policy: Policy | None = None
+    if isinstance(user_policy_payload, dict):
+        try:
+            user_policy = UserPolicy.model_validate(user_policy_payload)
+        except Exception as exc:
+            log.warning("[%s] invalid user_policy, ignoring: %s", session_id, exc)
+    # Stash under IP so `GET /v1/policy` returns this user's view even
+    # if the sidepanel opens settings after the WS closes. Persist to
+    # disk under hashed IP so the view survives a server restart.
+    if isinstance(user_policy_payload, dict):
+        registry.set_user_policy(client_host, user_policy_payload)
+        _persist_user_policy(client_host, user_policy_payload)
+    effective_policy = merge_policy(FLOOR_POLICY, user_policy)
+    log.info("[%s] effective_policy  mode=%s  blacklist=%d",
+             session_id, effective_policy.mode,
+             len(effective_policy.blacklist))
+
     deps = AgentDeps(
         user_id=session_id,
         task=task,
         task_id=session_id,
         cdp=relay,
         ws_send=ws_send,
+        policy=effective_policy,
         human_input_queue=human_queue,
     )
 
     agent_task = asyncio.create_task(harness.run(deps))
     log.info("[%s] agent task started", session_id)
+
+    # ponytail: one-shot WS frame so the sidepanel knows the EFFECTIVE
+    # policy the server is about to enforce (floor + user merged). Without
+    # this the sidepanel has no way to render "X domains enforced by your
+    # organisation" — it would only see its own saved list.
+    try:
+        await ws_send({
+            "type": "policy_effective",
+            "mode": effective_policy.mode,
+            "blacklist": effective_policy.blacklist,
+            "sensitive_actions": effective_policy.sensitive_actions,
+            "source": {
+                "floor": list(FLOOR_POLICY.blacklist) if FLOOR_POLICY else [],
+                "user": list(user_policy.blacklist) if user_policy else [],
+            },
+        })
+    except Exception as exc:
+        log.warning("[%s] failed to send policy_effective: %s", session_id, exc)
 
     try:
         while not agent_task.done():
@@ -202,8 +398,59 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
                 elif t == "human_reply":
                     log.info("[%s] ← human_reply", session_id)
                     await human_queue.put(incoming.get("content", ""))
+                elif t == "revoke":
+                    # ponytail: user clicked Revoke on a prior approval within
+                    # the post-approval window. Clear the first-time-seen
+                    # cache so the next step re-prompts. With deny-aborts-task
+                    # semantics, approved actions can't be "undone" — the task
+                    # is over once an action runs. Revoke just resets what
+                    # the next task would do.
+                    log.warning(
+                        "[%s] POLICY: user REVOKED prior approval — clearing seen_first_time",
+                        session_id,
+                    )
+                    try:
+                        deps.seen_first_time.clear()
+                    except Exception as exc:
+                        log.warning("[%s] revoke state-clear failed: %s", session_id, exc)
+                    await ws_send({"type": "policy_revoked"})
                 elif t == "ping":
                     await ws_send({"type": "pong"})
+                elif t == "policy_acknowledged":
+                    # Extension user clicked Save in sidepanel Settings.
+                    # Log the full new payload so the server has a record
+                    # independent of any task_start.
+                    settings = incoming.get("settings") or {}
+                    # Update the in-memory mirror so GET /v1/policy returns
+                    # the just-saved view without waiting for the next
+                    # task_start. Persist to disk too. Keyed by IP so it
+                    # survives a session restart — see the ponytail note
+                    # at the task_start handler above.
+                    snapshot = {
+                        "mode": settings.get("mode"),
+                        "blacklist": settings.get("blacklist") or [],
+                    }
+                    registry.set_user_policy(client_host, snapshot)
+                    _persist_user_policy(client_host, snapshot)
+                    log.warning(
+                        "[%s] POLICY: user saved settings  mode=%s  blacklist=%s",
+                        session_id,
+                        settings.get("mode"),
+                        settings.get("blacklist"),
+                    )
+                    try:
+                        from .agent.run_logger import append_policy_event
+                        append_policy_event(
+                            session_id,
+                            step=None, kind="policy_acknowledged",
+                            domain=None, action=None,
+                            decision=(
+                                f"mode={settings.get('mode')}  "
+                                f"blacklist={settings.get('blacklist')}"
+                            ),
+                        )
+                    except Exception as exc:
+                        log.warning("[%s] failed to persist policy_acknowledged: %s", session_id, exc)
                 else:
                     log.debug("[%s] ← unknown type=%s", session_id, t)
             except asyncio.TimeoutError:
@@ -273,7 +520,19 @@ async def websocket_agent(websocket: WebSocket, user_id: str):
                 session.cancel_current_task()
                 task_text = msg.get("task", "")
                 start_url = msg.get("start_url", "about:blank")
-                log.info("[%s] submit_task  task=%r  start_url=%s", user_id, task_text[:80], start_url)
+                user_policy_payload = msg.get("user_policy")
+                user_policy: Policy | None = None
+                if isinstance(user_policy_payload, dict):
+                    try:
+                        user_policy = UserPolicy.model_validate(user_policy_payload)
+                    except Exception as exc:
+                        log.warning("[%s] invalid user_policy, ignoring: %s", user_id, exc)
+                effective_policy = merge_policy(FLOOR_POLICY, user_policy)
+                log.info("[%s] submit_task  task=%r  start_url=%s  effective_mode=%s",
+                         user_id, task_text[:80], start_url, effective_policy.mode)
+                log.info("[%s] effective_policy  mode=%s  blacklist=%d",
+                         user_id, effective_policy.mode,
+                         len(effective_policy.blacklist))
 
                 async def _run_task(task: str, start_url: str) -> None:
                     from .dev.playwright_browser import PlaywrightBrowser
@@ -289,6 +548,7 @@ async def websocket_agent(websocket: WebSocket, user_id: str):
                             cdp=cdp,
                             ws_send=ws_send,
                             human_input_queue=human_input_queue,
+                            policy=effective_policy,
                         )
                         watchdog = CDPWatchdog(cdp, on_dead=lambda: ws_send({"type": "cdp_dead"}))
                         await watchdog.start()
@@ -329,7 +589,16 @@ async def run_task(request: Request):
     body = await request.json()
     task = body.get("task", "")
     start_url = body.get("start_url", "about:blank")
-    log.info("/run  task=%r  start_url=%s", task[:80], start_url)
+    user_policy_payload = body.get("user_policy")
+    user_policy: Policy | None = None
+    if isinstance(user_policy_payload, dict):
+        try:
+            user_policy = UserPolicy.model_validate(user_policy_payload)
+        except Exception as exc:
+            log.warning("/run: invalid user_policy, ignoring: %s", exc)
+    effective_policy = merge_policy(FLOOR_POLICY, user_policy)
+    log.info("/run  task=%r  start_url=%s  effective_mode=%s",
+             task[:80], start_url, effective_policy.mode)
 
     if not task:
         return JSONResponse(status_code=400, content={"error": "task required"})
@@ -344,7 +613,14 @@ async def run_task(request: Request):
         await browser.launch(headless=True, url=start_url)
         cdp = CDPRelay(browser)
         task_id = str(uuid.uuid4())
-        deps = AgentDeps(user_id="http-dev", task=task, task_id=task_id, cdp=cdp, ws_send=ws_send)
+        deps = AgentDeps(
+            user_id="http-dev",
+            task=task,
+            task_id=task_id,
+            cdp=cdp,
+            ws_send=ws_send,
+            policy=effective_policy,
+        )
         result = await harness.run(deps)
         return JSONResponse(content=result.model_dump())
     except Exception as exc:

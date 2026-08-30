@@ -113,6 +113,10 @@ class TaskResult(BaseModel):
     failure_reason: str | None = None
     tried: list[str] = field(default_factory=list)
     timing: dict | None = None  # per-component seconds + wall clock, set by harness
+    # ponytail: set by the harness so the sidepanel can show a "SECURE"
+    # badge for the duration of the task_result bubble. Optional so
+    # existing callers/tests don't have to populate it.
+    policy_mode: str | None = None
 
 
 @dataclass
@@ -128,3 +132,15 @@ class AgentDeps:
     step_number: int = 0
     result: TaskResult | None = None
     prev_targets: list = field(default_factory=list)  # AX targets from previous step for diffing
+    policy: object = None  # Policy (services/brotto_orchestrator/policy/schema.Policy). Lazy import.
+    # (etld1, action_type) tuples seen this session — used to gate the
+    # first-time-seen prompt so it fires once per pair. Added on both
+    # approve AND deny: on deny, the task is aborted anyway, but if a
+    # retry path ever reuses this set we don't want to re-prompt
+    # indefinitely on a persistent prompt-injection attempt.
+    seen_first_time: set = field(default_factory=set)
+    # eTLD+1 domains the user has explicitly approved navigating to this
+    # task. In secure mode, the first navigation to any new domain
+    # surfaces a "first navigation" approval; approve → add to set,
+    # subsequent navigations to the same domain don't re-prompt.
+    visited_domains: set = field(default_factory=set)

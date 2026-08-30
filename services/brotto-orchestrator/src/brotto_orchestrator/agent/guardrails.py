@@ -44,18 +44,15 @@ _STRONG_RE = [re.compile(p, re.I) for p in STRONG_CONTENT_MARKERS]
 def check_login_page(page_title: str, ax_tree: str, url: str) -> bool:
     """Detect a login page. Returns True when the agent should pause for login.
 
-    Each of the three signals is independently sufficient on its own:
-      - URL on a known login/auth path (e.g. /login, /signin, /sso)
-      - Page title matches a login phrase (e.g. "Sign in", "Log in")
-      - Content has a STRONG marker (password, authenticate, sso, etc.)
+    Title and URL are each independently authoritative — a page titled
+    "Sign in" IS a login page, and a URL on a known login path is too.
 
-    The previous heuristic combined all three into one string and ran a
-    single regex against the whole thing, so any "Sign in" button in a
-    signed-in page's header would trigger the login pause. The new rule
-    keeps the page title and the URL as authoritative signals (a page
-    titled "Sign in" IS a login page) but treats "Sign in" inside the AX
-    tree as a weak marker — common in headers of signed-in pages like
-    GitHub — and requires a strong marker to fire from the AX tree alone.
+    An AX-tree STRONG marker alone is NOT sufficient: "password" appears
+    on Google Search via the password manager, "oauth" appears in Gmail
+    from analytics/integration tags, and "Sign in" links live in headers
+    of already-signed-in pages like GitHub. Firing on those yields a
+    false-positive login pause mid-task. A strong marker only counts
+    when paired with corroboration from title or URL.
 
     "Session expired" in the content force-triggers regardless, since
     that means the user was logged out from a modal on the current page.
@@ -73,10 +70,16 @@ def check_login_page(page_title: str, ax_tree: str, url: str) -> bool:
     if any(p in url_lower for p in LOGIN_URL_PATTERNS):
         return True
 
-    # AX tree alone requires a strong marker (password, authenticate, sso…).
-    # "Sign in" buttons in headers are weak and don't count.
+    # AX tree strong marker alone is too noisy — require corroboration.
+    # If title/URL above matched, we already returned True; reaching here
+    # means neither matched, so a lone "password" / "oauth" / etc. is
+    # treated as incidental and does not pause the agent.
     if any(r.search(ax_tree) for r in _STRONG_RE):
-        return True
+        if _LOGIN_TITLE_RE.search(page_title):
+            return True
+        if any(p in url_lower for p in LOGIN_URL_PATTERNS):
+            return True
+        return False
 
     return False
 
@@ -95,6 +98,36 @@ def check_critical_action(action: str, action_args: dict) -> bool:
         return False
     combined = f"{action} {action_args}"
     return any(r.search(combined) for r in _CRITICAL_RE)
+
+
+def check_sensitive_action(action: str, action_args: dict, policy) -> bool:
+    """True iff secure mode is on AND the action matches an entry in
+    `policy.sensitive_actions`. The list is matched as a substring against
+    either the action name or any string in action_args — admins author
+    both forms (``"payment"`` matches a ``payment`` action OR a click
+    with ``description="payment button"``).
+
+    Normal mode → always False (the regex `CRITICAL_PATTERNS` guard above
+    still applies; sensitive_actions is the secure-mode-only escalation).
+
+    Terminal / internal / question actions are skipped — those are
+    metadata, not things the user should approve. (E.g. a click with
+    description matching `payment` should fire; but a scratchpad write
+    whose notes happen to mention "payment" should not.)
+    """
+    if getattr(policy, "mode", None) != "secure":
+        return False
+    patterns = getattr(policy, "sensitive_actions", None) or []
+    if not patterns:
+        return False
+    if action in {"task_complete", "cannot_complete", "ask_human",
+                  "write_scratchpad", "append_scratchpad", "read_scratchpad",
+                  "recall_memory", "read_page_text"}:
+        return False
+    # Match against action name + arg values joined into one string.
+    # Cheap substring scan; no regex needed for the curated list.
+    haystack = " ".join([action] + [str(v) for v in action_args.values()]).lower()
+    return any(p.lower() in haystack for p in patterns)
 
 
 async def wait_for_redirect(get_url_fn, from_url: str, timeout: int = 120) -> str:
