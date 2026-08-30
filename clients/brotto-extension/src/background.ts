@@ -26,6 +26,67 @@ let sessionId: string | null = null;
 let serverUrl: string = DEFAULT_SERVER;
 let taskTerminalEmitted = false;
 let stepIndex = 0;
+// ponytail: Bug B-fix — distinguish "task running, server died" from
+// "task finished cleanly, no need to keep the WS alive". Without this
+// flag, scheduleReconnect() opens a fresh WS after every clean task
+// end. The new WS has no task_start to send (the initial startRelay
+// path is the only sender), so the server's heartbeat ping arrives
+// as the first message ~20s later and the server logs
+// "expected task_start, got ping" before closing. Auto-reconnect is
+// only meaningful when an in-flight task needs the WS back.
+let taskInFlight = false;
+
+// ponytail: Bug 4 — auto-reconnect state. Tracks attempts, target URL,
+// and whether the user has explicitly disconnected (in which case we
+// do NOT auto-reconnect, even if the WS dies).
+let reconnectAttempts = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let userInitiatedDisconnect = false;
+// ponytail: 3 attempts at 5s flat. Earlier we used exponential backoff
+// (1s → 2s → 4s → 8s → 16s → 30s, 5 attempts max) — that surfaced
+// "Reconnecting… (attempt 5)" to the user and made the failure feel
+// unbounded. The user wants a short, predictable window: try 3 times
+// at 5s intervals, then surface the failure and require a manual
+// Connect. The reconnect is for the NEXT task; the in-flight task is
+// already lost when the WS dies (handled in cleanup()).
+const MAX_RECONNECT_ATTEMPTS = 3;
+const BASE_RECONNECT_DELAY_MS = 5000;
+
+// ponytail: Bug 5 — heartbeat. Without this, the only signal that the
+// server is dead is the OS-level TCP timeout (can be minutes). With a
+// 20s ping + 30s pong-deadline, the SW detects server loss within
+// ~30s of the actual outage rather than waiting on the kernel.
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let lastPongAt = 0;
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const HEARTBEAT_DEADLINE_MS = 30_000;
+
+function startHeartbeat(): void {
+  stopHeartbeat();
+  lastPongAt = Date.now();
+  heartbeatTimer = setInterval(() => {
+    // If the WS is closed/closing, the server is unreachable from our
+    // perspective and cleanup() is already running. Skip the ping.
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastPongAt > HEARTBEAT_DEADLINE_MS) {
+      console.warn("[brotto] heartbeat deadline missed — forcing reconnect");
+      try { ws.close(); } catch { /* ignore */ }
+      return; // onclose → cleanup → scheduleReconnect
+    }
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      try { ws.close(); } catch { /* ignore */ }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
 // ponytail: monotonic observation seq per session. The server's
 // obs_validator dedupes on this so duplicate WS deliveries (reconnects,
 // queued messages) are dropped silently. Reset on a new session — the
@@ -37,6 +98,42 @@ let observationSeq = 0;
 let waitingForLogin = false;
 let currentPrompt: "login" | "approval" | "clarify" | null = null;
 let lastObservedUrl = "";
+
+// User-side policy: persisted in chrome.storage.local (settings key) and
+// refreshed in-memory on `policy_changed` from the sidepanel. Sent as
+// `user_policy` on each task_start; the server merges with the floor.
+// ponytail: write-on-save only — no debounce, no reactivity layer.
+// ponytail: whitelist was removed in the enterprise redesign — secure
+// mode now means "hard-block blacklisted + first-time-seen prompts on
+// new (domain, action) pairs". Keeping the type narrow to what we ship.
+let userPolicy: { mode: "normal" | "secure"; blacklist: string[] } = {
+  mode: "normal",
+  blacklist: [],
+};
+
+// ponytail: Bug 1 — SW hydration on startup. Without this, every
+// extension reload resets userPolicy to defaults even though the user
+// saved a secure-mode policy. The sidepanel writes to chrome.storage
+// .local on Save; we mirror it into the SW's in-memory `userPolicy`
+// here so the next task_start ships the correct view.
+async function hydrateUserPolicy(): Promise<void> {
+  try {
+    const stored = await chrome.storage.local.get("settings");
+    const s = stored.settings as
+      | { mode?: string; blacklist?: unknown }
+      | undefined;
+    if (!s) return;
+    userPolicy = {
+      mode: s.mode === "secure" ? "secure" : "normal",
+      blacklist: Array.isArray(s.blacklist)
+        ? s.blacklist.filter((d): d is string => typeof d === "string")
+        : [],
+    };
+    console.log("[brotto] userPolicy hydrated from storage:", userPolicy);
+  } catch (e) {
+    console.warn("[brotto] hydrateUserPolicy failed (using defaults):", e);
+  }
+}
 
 const pendingClarifyResolvers  = new Map<string, (answer: string) => void>();
 const pendingApprovalResolvers = new Map<string, (approved: boolean) => void>();
@@ -280,7 +377,17 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    ws!.send(JSON.stringify({ type: "task_start", task: goal, session_id }));
+    // ponytail: Bug 4 — successful open resets the reconnect backoff
+    // counter. Next time the WS dies we start the delay at 1s again.
+    resetReconnectStateOnSuccess();
+    // ponytail: Bug 5 — start the ping/pong watchdog.
+    startHeartbeat();
+    ws!.send(JSON.stringify({
+      type: "task_start",
+      task: goal,
+      session_id,
+      user_policy: userPolicy,
+    }));
   };
 
   ws.onmessage = async (ev) => {
@@ -317,6 +424,13 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
         notifyUi({ type: "canonical_status", status: "executing" });
         break;
 
+      case "pong":
+        // ponytail: Bug 5 — heartbeat response. Reset the deadline so the
+        // next ping has a fresh 30s window. If pong stops arriving, the
+        // interval callback in startHeartbeat() force-closes the WS.
+        lastPongAt = Date.now();
+        break;
+
       case "context_update":
         // ponytail: step had no external actions (e.g. scratchpad-only).
         // Still emit context so the sidepanel utilization % updates on
@@ -330,13 +444,25 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
       case "task_result": {
         if (taskTerminalEmitted) break;
         taskTerminalEmitted = true;
+        taskInFlight = false;
         void setBadge(false);
         const r = msg.result ?? {};
         if (r.status === "completed") {
           notifyUi({ type: "task_completed", summary: r.summary ?? "", steps: stepIndex, finalAnswer: r.summary ?? "", extracted_data: r.extracted_data, timing: r.timing ?? null });
           notifyUi({ type: "canonical_status", status: "completed" });
         } else {
-          notifyUi({ type: "task_failed", code: r.failure_reason ?? r.status ?? "failed", message: r.summary ?? "Task failed", timing: r.timing ?? null });
+          // ponytail: field names match the sidepanel's task_failed
+          // handler. Earlier payload used `code` + `message` which made
+          // renderPolicyFailureCard's `message.failure_reason` lookup
+          // miss, so the generic "Task failed" fallback rendered even
+          // for policy_preflight. `failure_reason` and `summary` are
+          // what the renderer branches on.
+          notifyUi({
+            type: "task_failed",
+            failure_reason: r.failure_reason ?? r.status ?? "failed",
+            summary: r.summary ?? "Task failed",
+            timing: r.timing ?? null,
+          });
           notifyUi({ type: "canonical_status", status: "failed" });
         }
         break;
@@ -345,8 +471,11 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
       case "task_error":
         if (taskTerminalEmitted) break;
         taskTerminalEmitted = true;
+        taskInFlight = false;
         void setBadge(false);
-        notifyUi({ type: "task_failed", code: "TASK_ERROR", message: msg.error ?? "Unknown error" });
+        // ponytail: failure_reason + summary field names — see the
+        // matching note on the task_result handler.
+        notifyUi({ type: "task_failed", failure_reason: "TASK_ERROR", summary: msg.error ?? "Unknown error" });
         notifyUi({ type: "canonical_status", status: "failed" });
         break;
 
@@ -412,8 +541,11 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
   ws.onerror = () => {
     if (!taskTerminalEmitted) {
       taskTerminalEmitted = true;
+      taskInFlight = false;
       void setBadge(false);
-      notifyUi({ type: "task_failed", code: "WS_ERROR", message: "WebSocket connection error" });
+      // ponytail: failure_reason + summary field names — see the
+      // matching note on the task_result handler.
+      notifyUi({ type: "task_failed", failure_reason: "WS_ERROR", summary: "WebSocket connection error" });
       notifyUi({ type: "canonical_status", status: "failed" });
     }
   };
@@ -423,6 +555,35 @@ async function startRelay(goal: string, plannerUrl: string, startingUrl?: string
 
 async function cleanup(): Promise<void> {
   const tid = activeTabId;
+  // ponytail: WS died mid-task → end the task with a connection-lost
+  // reason BEFORE the disconnected event. The harness on the server
+  // is stuck waiting on human_input_queue and can't recover from a
+  // dead WS, so the only thing we can do from this side is mark the
+  // task as failed so the UI stops the timer and shows the bubble.
+  // Without this, state.phase stays 'executing' on the sidepanel, the
+  // timer keeps running, and the task is effectively invisible-orphan.
+  // Reconnect attempts run in the background regardless — they're for
+  // the NEXT task.
+  if (taskInFlight && !taskTerminalEmitted) {
+    taskTerminalEmitted = true;
+    taskInFlight = false;
+    void setBadge(false);
+    notifyUi({
+      type: "task_failed",
+      failure_reason: "CONNECTION_LOST",
+      summary: "Lost connection to the Brotto server. The task can't continue — start a new task once the server is back.",
+    });
+    notifyUi({ type: "canonical_status", status: "failed" });
+  }
+  // ponytail: Bug 3 — emit a disconnected event so the sidepanel can
+  // update its connection pill. Sent AFTER task_failed so the
+  // task_failed handler runs first and the pill update doesn't race
+  // with the terminal phase set.
+  notifyUi({ type: "disconnected", reason: "ws_closed" });
+  // ponytail: Bug 5 — stop the heartbeat before tearing down ws. The
+  // heartbeat interval reads `ws.readyState` and would be a no-op anyway,
+  // but explicit stop is easier to reason about.
+  stopHeartbeat();
   activeTabId = null;
   tabStack = [];
   ws = null;
@@ -433,6 +594,87 @@ async function cleanup(): Promise<void> {
   if (tid !== null) void dbg.detachFromTab(tid).catch(() => undefined);
   void setBadge(false);
   void chrome.storage.session.clear();
+  // ponytail: Bug 4 — kick off auto-reconnect unless the user clicked
+  // Disconnect (their intent is to stay offline).
+  scheduleReconnect();
+}
+
+// ponytail: Bug 4 — flat-delay reconnect (3 attempts × 5s) for the
+// next task. The in-flight task is already terminated by cleanup();
+// reconnect is purely so the next `run_local_task` doesn't have to
+// wait for the server to come back AND the user to click Connect.
+function scheduleReconnect(): void {
+  if (userInitiatedDisconnect) return;
+  // ponytail: Bug B-fix — only auto-reconnect when a task is actually
+  // in flight. After a clean task ending, ws.onclose → cleanup() runs
+  // with taskInFlight=false, so reconnect early-returns. This avoids
+  // opening ghost WS connections that the server would reject with
+  // "expected task_start, got ping" once the 20s heartbeat fires.
+  if (!taskInFlight) return;
+  if (reconnectTimer !== null) return; // already scheduled
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    notifyUi({ type: "reconnect_giveup" });
+    return;
+  }
+  reconnectAttempts++;
+  notifyUi({ type: "reconnect_attempt", attempt: reconnectAttempts, delayMs: BASE_RECONNECT_DELAY_MS });
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    // ponytail: Bug 4 — empty-path WS fix: we used to call
+    // `new WebSocket(serverUrl)` where serverUrl is the http:// planner
+    // URL, which the browser normalises to ws://host/ (root path). The
+    // server's WS endpoints live at /ws/ext/{session_id} and /ws/{user_id}
+    // — root is 403. Fix: POST /v1/sessions first to mint a fresh
+    // session, then open the WS to the returned websocket_url. The user
+    // will need to click Start for the next task — the harness picks
+    // up this session via the next startRelay's task_start WS message.
+    if (!serverUrl) return;
+    void (async () => {
+      try {
+        const resp = await fetch(`${serverUrl}/v1/sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (!resp.ok) throw new Error(`session create failed: HTTP ${resp.status}`);
+        const { websocket_url } = await resp.json() as { websocket_url: string };
+        if (userInitiatedDisconnect) return; // bailed mid-flight
+        const probe = new WebSocket(websocket_url);
+        probe.onopen = () => {
+          if (userInitiatedDisconnect) { try { probe.close(); } catch { /* ignore */ } return; }
+          ws = probe;
+          resetReconnectStateOnSuccess();
+          startHeartbeat();
+          notifyUi({ type: "ws_ready" });
+        };
+        probe.onerror = () => { try { probe.close(); } catch { /* ignore */ } };
+        probe.onclose = () => {
+          // Probe failed → schedule another attempt. ws.onclose doesn't
+          // fire cleanup() here because we haven't reassigned ws yet
+          // (the original ws was already nulled by cleanup()).
+          void scheduleReconnect();
+        };
+      } catch (e) {
+        console.warn("[brotto] reconnect probe failed:", e);
+        // Failure → retry.
+        void scheduleReconnect();
+      }
+    })();
+  }, BASE_RECONNECT_DELAY_MS);
+}
+
+function cancelReconnect(): void {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  reconnectAttempts = 0;
+}
+
+function resetReconnectStateOnSuccess(): void {
+  cancelReconnect();
+  reconnectAttempts = 0;
+  userInitiatedDisconnect = false;
 }
 
 function stopRelay(): void {
@@ -460,6 +702,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             return;
           }
           taskTerminalEmitted = false;
+          // ponytail: Bug B-fix — mark a task as in-flight so the
+          // auto-reconnect logic only fires for genuine mid-task WS
+          // death, not for clean task endings.
+          taskInFlight = true;
           pendingClarifyResolvers.clear();
           pendingApprovalResolvers.clear();
           waitingForLogin = false;
@@ -481,9 +727,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           startRelay(goal, plannerUrl, message.startingUrl as string | undefined)
             .catch((err: unknown) => {
               void setBadge(false);
+              taskInFlight = false;
               if (!taskTerminalEmitted) {
                 taskTerminalEmitted = true;
-                notifyUi({ type: "task_failed", code: "START_FAILED", message: err instanceof Error ? err.message : String(err) });
+                // ponytail: failure_reason + summary field names — see
+                // the matching note on the task_result handler.
+                notifyUi({ type: "task_failed", failure_reason: "START_FAILED", summary: err instanceof Error ? err.message : String(err) });
                 notifyUi({ type: "canonical_status", status: "failed" });
               }
             });
@@ -494,8 +743,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         case "cancel_local_task": {
           taskTerminalEmitted = true;
+          taskInFlight = false;
           stopRelay();
           notifyUi({ type: "canonical_status", status: "cancelled" });
+          sendResponse({ success: true });
+          break;
+        }
+
+        // ponytail: Bug 4 — user clicked Disconnect. Mark intent so
+        // auto-reconnect doesn't fight the user; close any in-flight
+        // session; the next sidepanel Connect clears the flag and
+        // re-allows reconnect.
+        case "user_disconnect": {
+          userInitiatedDisconnect = true;
+          cancelReconnect();
+          taskTerminalEmitted = true;
+          taskInFlight = false;
+          if (ws) {
+            try { ws.close(); } catch { /* ignore */ }
+          }
+          ws = null;
+          notifyUi({ type: "canonical_status", status: "disconnected" });
           sendResponse({ success: true });
           break;
         }
@@ -510,6 +778,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
 
         case "local_login_skip": {
+          taskInFlight = false;
           stopRelay();
           sendResponse({ success: true });
           break;
@@ -541,6 +810,41 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case "get_connection_status":
           sendResponse({ success: true, status: { connected: ws?.readyState === WebSocket.OPEN, session_id: sessionId } });
           break;
+
+        case "policy_changed": {
+          // ponytail: write-on-save. The sidepanel already wrote the
+          // full settings object to chrome.storage.local; here we just
+          // update the in-memory mirror used on the next task_start.
+          const s = message.settings as
+            | { mode?: string; blacklist?: string[] }
+            | undefined;
+          if (s) {
+            userPolicy = {
+              mode: s.mode === "secure" ? "secure" : "normal",
+              blacklist: Array.isArray(s.blacklist) ? s.blacklist : [],
+            };
+          }
+          sendResponse({ success: true });
+          break;
+        }
+
+        case "send_to_server": {
+          // ponytail: sidepanel wants to push a message over the active
+          // WS to the orchestrator (e.g. policy_acknowledged). Used when
+          // there's no task in flight but the user did something the
+          // server should know about.
+          const payload = message.payload;
+          if (ws && ws.readyState === WebSocket.OPEN && payload) {
+            ws.send(JSON.stringify(payload));
+          }
+          sendResponse({ success: true });
+          break;
+        }
+
+        case "get_user_policy": {
+          sendResponse({ success: true, userPolicy });
+          break;
+        }
 
         case "get_context": {
           // ponytail: sidepanel asks the backend (via the SW so we
@@ -629,6 +933,11 @@ chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
 async function initialize(): Promise<void> {
   // Restore any in-flight pause state from the previous SW lifetime.
   await restoreSession();
+  // ponytail: Bug 1 — re-hydrate userPolicy from chrome.storage.local
+  // so the next task_start ships the saved view, not defaults. Done
+  // before restoreSession would otherwise ship empty task_start
+  // metadata.
+  await hydrateUserPolicy();
 
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== "brotto-sidepanel") return;
