@@ -1,0 +1,23 @@
+{
+  "mode": "secure",
+  "blacklist": [
+    "competitor-bank.com",
+    "*.personal-mail.com",
+    "webmail-throwaway.net"
+  ],
+  "first_time_seen_prompt": true,
+  "sensitive_actions": [
+    "submit_form",
+    "delete_record",
+    "payment",
+    "transfer",
+    "change_password",
+    "revoke_access",
+    "publish",
+    "deploy",
+    "send_email",
+    "external_post",
+    "approve",
+    "reject"
+  ]
+}

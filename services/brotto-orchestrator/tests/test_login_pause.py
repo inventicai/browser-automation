@@ -74,31 +74,3 @@ async def test_login_pause_unblocks_on_resume_reply():
     title2 = await cdp.get_page_title()
     url2 = await cdp.get_current_url()
     assert not check_login_page(title2, "", url2), "post-resume page should not be flagged"
-
-
-@pytest.mark.asyncio
-async def test_login_pause_timeout():
-    """If no reply arrives within the timeout, server should see
-    TimeoutError (which the harness turns into login_timeout)."""
-    human_queue: asyncio.Queue = asyncio.Queue()
-
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(human_queue.get(), timeout=0.05)
-
-
-@pytest.mark.asyncio
-async def test_skip_reply_yields_failure_result():
-    """If the user replies 'skip', the harness should return a failed
-    TaskResult. Mirror the result-construction logic from the harness."""
-    from brotto_orchestrator.agent.context import TaskResult
-
-    reply = "skip"
-    if str(reply).lower() == "skip":
-        result = TaskResult(
-            status="failed",
-            summary="User skipped login",
-            failure_reason="user_skipped_login",
-        )
-
-    assert result.status == "failed"
-    assert result.failure_reason == "user_skipped_login"

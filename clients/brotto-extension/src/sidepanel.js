@@ -28,17 +28,21 @@ const stepCountActive = document.getElementById('stepCountActive');
 const timerActiveEl   = document.getElementById('timerActive');
 const newTaskBtn      = document.getElementById('newTaskBtn');
 const connectionMeta  = document.getElementById('connectionMeta');
+const statusPill      = document.getElementById('statusPill');
 // ponytail: tab-bar handles — render each lifecycle event (open/close/nav/
 // focus) as a row so the user sees what the agent touched in their browser.
 const tabBar         = document.getElementById('tabBar');
 const tabBarBody     = document.getElementById('tabBarBody');
 const tabBarToggle   = document.getElementById('tabBarToggle');
 
+// ponytail: soft length cap on user task input. Tasks over this many chars
+// trigger a confirm() before send; matching server warning at the same
+// threshold (defense in depth). Not a hard block — the user is the
+// final authority on what they want the agent to do.
+const MAX_TASK_CHARS = 1000;
+
 // ── Settings panel ────────────────────────────────────────────────────────
-settingsBtn.addEventListener('click', () => {
-  plannerUrlSetting.value = plannerUrlEl.value || 'http://localhost:8000';
-  settingsOverlay.classList.add('open');
-});
+// (handlers below — reads chrome.storage.local, writes on Save)
 
 // ponytail: tab-bar — collapsed/expanded by default. Each row shows badge
 // (kind), title (or url), and a one-line context line.
@@ -168,6 +172,262 @@ settingsOverlay.addEventListener('click', (e) => {
 plannerUrlSetting.addEventListener('input', () => {
   plannerUrlEl.value = plannerUrlSetting.value;
 });
+
+// ── Settings: load + save (first chrome.storage.local writes — today the
+// SW only reads `get("settings")`, so this is the seed for that key).
+const securityModeSetting = document.getElementById('securityModeSetting');
+const blacklistSetting    = document.getElementById('blacklistSetting');
+const floorBlacklistEl    = document.getElementById('floorBlacklist');
+const saveSettingsBtn     = document.getElementById('saveSettingsBtn');
+const refreshPolicyBtn    = document.getElementById('refreshPolicyBtn');
+
+// ponytail: on Settings open, fetch the EFFECTIVE policy from the server
+// so the sidepanel shows what the server is actually enforcing (floor +
+// user merged), not the user's local cache. The user's saved edits still
+// drive the editable textarea; the floor is rendered read-only above it.
+settingsBtn.addEventListener('click', async () => {
+  plannerUrlSetting.value = plannerUrlEl.value || 'http://localhost:8000';
+  await hydrateSettingsPanel();
+  settingsOverlay.classList.add('open');
+  renderVerifyStatus();
+});
+
+// ponytail: Q1 — extracted so the Refresh button can re-run the same
+// fetch + render flow without re-opening the panel.
+async function hydrateSettingsPanel() {
+  // ponytail: chrome.storage.local is the AUTHORITATIVE source for what
+  // the SW will ship on the next task_start. The server's /v1/policy
+  // view is only used to render the org-floor (locked) list — it must
+  // NOT override the user's locally-saved mode/blacklist, or the UI
+  // lies about what's actually enforced. Without this, a user could
+  // think they're in normal mode while the SW still ships yesterday's
+  // secure+blacklist saved in storage.
+  const stored = await chrome.storage.local.get('settings');
+  const s = stored.settings || {};
+  const base = (plannerUrlEl.value || 'http://localhost:8000').replace(/\/$/, '');
+
+  // Fetch server's effective policy in parallel with reading local cache.
+  let effective = null;
+  try {
+    const r = await fetch(`${base}/v1/policy`);
+    if (r.ok) effective = await r.json();
+    console.log('[brotto] policy from server:', effective);
+  } catch (e) {
+    console.warn('[brotto] could not fetch /v1/policy, using local cache:', e);
+  }
+  // Cache the fetched effective policy so the Save handler can read the
+  // floor list from it (we don't want to re-fetch on every Save).
+  state.lastEffective = effective;
+  // Track when we last successfully verified policy with the server.
+  // Used to render a "Last verified N seconds ago" footer so the user
+  // knows whether the sidepanel is grounded in fresh server state or
+  // showing stale local data.
+  state.lastVerifiedAt = effective ? Date.now() : (state.lastVerifiedAt || null);
+  state.serverReachable = !!effective;
+
+  // Mode + blacklist come from LOCAL storage. The server view is used
+  // only to display the locked floor list — it never overrides the
+  // user's saved settings here.
+  const mode = s.mode === 'secure' ? 'secure' : 'normal';
+  securityModeSetting.value = mode;
+  const localBlacklist = Array.isArray(s.blacklist) ? s.blacklist : [];
+
+  // Floor (locked) — always rendered from the server when available.
+  // Build via DOM APIs (not innerHTML) so a malicious floor file can't
+  // smuggle markup into the sidepanel.
+  const floorList = Array.isArray(effective?.source?.floor) ? effective.source.floor : [];
+  if (floorBlacklistEl) {
+    while (floorBlacklistEl.firstChild) floorBlacklistEl.removeChild(floorBlacklistEl.firstChild);
+    if (!effective) {
+      // ponytail: Bug 6 — server unreachable. Don't pretend there are
+      // no org entries. Be explicit so the user knows their saved list
+      // is shown below but the org floor is unknown right now.
+      const empty = document.createElement('div');
+      empty.className = 'floor-empty floor-unreachable';
+      empty.textContent =
+        '⚠ Could not reach server — organisation policy list unknown. ' +
+        'Your saved entries below are still active locally.';
+      floorBlacklistEl.appendChild(empty);
+    } else if (floorList.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'floor-empty';
+      empty.textContent = 'No organisation-wide entries.';
+      floorBlacklistEl.appendChild(empty);
+    } else {
+      for (const d of floorList) {
+        const row = document.createElement('div');
+        row.className = 'floor-item';
+        const lock = document.createTextNode('🔒 ');
+        const name = document.createTextNode(d + ' ');
+        const tag = document.createElement('span');
+        tag.className = 'floor-tag';
+        tag.textContent = 'organisation policy';
+        row.appendChild(lock);
+        row.appendChild(name);
+        row.appendChild(tag);
+        floorBlacklistEl.appendChild(row);
+      }
+    }
+  }
+
+  // ponytail: textarea shows user-ONLY entries (the local blacklist
+  // minus the floor). The floor is locked above; the user can't "edit"
+  // a locked entry by deleting it — on Save we re-union and persist.
+  const userOnly = localBlacklist.filter((d) => !floorList.includes(d));
+  blacklistSetting.value = userOnly.join('\n');
+
+  // Header line: how many domains the user has saved (local view).
+  // Floor is rendered separately above; this count matches what the SW
+  // will actually ship on the next task_start.
+  const headerEl = document.getElementById('policyModeHeader');
+  if (headerEl) {
+    if (mode === 'secure') {
+      headerEl.textContent = `Mode: secure · ${localBlacklist.length} domain${localBlacklist.length === 1 ? '' : 's'} saved locally.`;
+      headerEl.classList.add('secure');
+    } else {
+      headerEl.textContent = 'Mode: normal — secure mode not active.';
+      headerEl.classList.remove('secure');
+    }
+  }
+}
+
+// ponytail: Q1 — refresh from server without re-opening Settings.
+// Re-runs the same hydration flow so the user sees the latest
+// effective policy without a full panel reopen.
+if (refreshPolicyBtn) {
+  refreshPolicyBtn.addEventListener('click', async () => {
+    refreshPolicyBtn.disabled = true;
+    const original = refreshPolicyBtn.textContent;
+    refreshPolicyBtn.textContent = '↻ Refreshing…';
+    try {
+      await hydrateSettingsPanel();
+      renderVerifyStatus();
+      refreshPolicyBtn.textContent = '✓ Refreshed';
+    } catch {
+      refreshPolicyBtn.textContent = '⚠ Refresh failed';
+    } finally {
+      setTimeout(() => {
+        refreshPolicyBtn.textContent = original;
+        refreshPolicyBtn.disabled = false;
+      }, 1500);
+    }
+  });
+}
+
+// ponytail: footer that tells the user whether the sidepanel's policy
+// view is grounded in fresh server state, stale, or local-only. Re-render
+// on save (server just confirmed) and on every settings open.
+function renderVerifyStatus() {
+  const el = document.getElementById('settingsVerifyStatus');
+  if (!el) return;
+  el.classList.remove('ok', 'stale', 'off');
+  if (!state.serverReachable) {
+    el.classList.add('off');
+    el.innerHTML = '';
+    const dot = document.createElement('span'); dot.className = 'dot';
+    const txt = document.createTextNode('Server unreachable — your edits are saved locally and will sync when it returns.');
+    el.appendChild(dot); el.appendChild(txt);
+    return;
+  }
+  if (!state.lastVerifiedAt) {
+    el.classList.add('stale');
+    el.textContent = 'Verifying server…';
+    return;
+  }
+  const ageSec = Math.max(0, Math.round((Date.now() - state.lastVerifiedAt) / 1000));
+  const ageLabel = ageSec < 5 ? 'just now'
+    : ageSec < 60 ? `${ageSec}s ago`
+    : `${Math.round(ageSec / 60)}m ago`;
+  el.classList.add('ok');
+  el.innerHTML = '';
+  const dot = document.createElement('span'); dot.className = 'dot';
+  const txt = document.createTextNode(`Server confirmed · ${ageLabel}`);
+  el.appendChild(dot); el.appendChild(txt);
+}
+
+if (saveSettingsBtn) {
+  saveSettingsBtn.addEventListener('click', async () => {
+    // Bug 8: if a task is currently running, the new policy won't take
+    // effect until the next task_start. Capture that so we can change
+    // the button copy.
+    const taskRunning = state.phase === 'executing' || state.phase === 'paused';
+
+    // Read what the user has in their editable list; the floor list is
+    // locked and not editable here. On Save we POST only the user portion
+    // — the server merges it with the floor on next task_start.
+    const userListRaw = blacklistSetting.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    // Re-derive the union by pulling the floor from the visible lock list.
+    const floorList = Array.isArray(state.lastEffective?.source?.floor) ? state.lastEffective.source.floor : [];
+    const merged = Array.from(new Set([...floorList, ...userListRaw]));
+    const settings = {
+      serverUrl: plannerUrlSetting.value || 'http://localhost:8000',
+      mode: securityModeSetting.value === 'secure' ? 'secure' : 'normal',
+      blacklist: merged,
+    };
+    await chrome.storage.local.set({ settings });
+    plannerUrlEl.value = settings.serverUrl;
+    console.log('[brotto] settings saved', settings);
+
+    // 1. Push the in-memory mirror to the SW so the next task_start
+    //    ships it. Bug 7: wait for the SW's success ack so we don't
+    //    claim "Saved" before the SW actually updated userPolicy.
+    let swOk = false;
+    try {
+      const ack = await chrome.runtime.sendMessage({
+        type: 'policy_changed',
+        settings: { mode: settings.mode, blacklist: settings.blacklist },
+      });
+      swOk = !!(ack && ack.success);
+      if (!swOk) console.warn('[brotto] SW ack missing or unsuccessful:', ack);
+    } catch (e) {
+      console.warn('[brotto] policy_changed message failed (SW asleep):', e);
+    }
+
+    // 2. HTTP POST to the server so the audit log records the save even
+    //    when no WS is open (i.e. no task running). We surface the
+    //    outcome in the button text so the user can see whether the
+    //    save actually reached the server (not just local storage).
+    saveSettingsBtn.disabled = true;
+    saveSettingsBtn.textContent = 'Saving…';
+    renderVerifyStatus();
+    let serverOk = false;
+    try {
+      const base = settings.serverUrl.replace(/\/$/, '');
+      const r = await fetch(`${base}/v1/policy_ack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { mode: settings.mode, blacklist: settings.blacklist } }),
+      });
+      serverOk = r.ok;
+      console.log('[brotto] policy_ack http status', r.status);
+    } catch (e) {
+      console.warn('[brotto] policy_ack http failed (server may be offline):', e);
+    }
+
+    if (swOk && serverOk) {
+      // Refresh the verified timestamp so the footer shows "just now".
+      state.lastVerifiedAt = Date.now();
+      state.serverReachable = true;
+      saveSettingsBtn.textContent = taskRunning
+        ? '✓ Saved — applies to next task'
+        : '✓ Saved — server confirmed';
+    } else if (!swOk && serverOk) {
+      // Local + server both fine, but the SW didn't ack — suspicious.
+      // Still show success but warn the user.
+      saveSettingsBtn.textContent = taskRunning
+        ? '⚠ Saved — applies to next task (SW did not ack)'
+        : '⚠ Saved — SW did not ack (will retry on next task)';
+    } else {
+      state.serverReachable = false;
+      saveSettingsBtn.textContent = '⚠ Saved locally — server unreachable';
+    }
+    renderVerifyStatus();
+    setTimeout(() => {
+      saveSettingsBtn.textContent = 'Save';
+      saveSettingsBtn.disabled = false;
+    }, 2200);
+  });
+}
 
 // ── State ─────────────────────────────────────────────────────────────────
 const state = {
@@ -438,6 +698,16 @@ async function sendUserMessage() {
   if (state.phase !== 'idle' && state.phase !== 'done' && state.phase !== 'error'
       && state.phase !== 'completed' && state.phase !== 'cancelled' && state.phase !== 'disconnected'
       && state.phase !== 'failed' && state.phase !== 'connected') return;
+  // ponytail: soft length cap. Tasks > MAX_TASK_CHARS get a confirm dialog
+  // because long compound instructions are a classic prompt-injection vector.
+  // The server logs a warning on the same threshold (defense in depth) but
+  // does not block — both layers are advisory, matching the "do not show by
+  // default, prompt the user" UX spec.
+  if (text.length > MAX_TASK_CHARS
+      && !window.confirm(
+        `This task is ${text.length} characters. Long prompts increase the risk of prompt injection. Send anyway?`)) {
+    return;
+  }
   // ponytail: clear prior conversation so each task starts fresh.
   clearMessages();
   // ponytail: clear previous task's tab-bar (the loop's tabEvent subscriptions
@@ -555,6 +825,18 @@ function setPhase(phase, message) {
   const showNewTask = phase === 'done' || phase === 'error';
   if (newTaskBtn) newTaskBtn.classList.toggle('visible', showNewTask);
   if (message) connectionMeta.textContent = message;
+  // ponytail: Bug 2 — drive the header connection pill from phase.
+  // Mid-task disconnects are handled separately via `case 'disconnected'`
+  // (Bug 3) which uses setConnPill directly.
+  if (phase === 'connected' || phase === 'executing' || phase === 'paused' || phase === 'done') {
+    setConnPill('connected', 'Connected');
+  } else if (phase === 'connecting') {
+    setConnPill(null, 'Connecting…');
+  } else if (phase === 'error') {
+    setConnPill('error', 'Disconnected');
+  } else {
+    setConnPill(null, 'Idle');
+  }
 }
 
 function clearTimer() {
@@ -640,6 +922,18 @@ function disconnect() {
   state.plannerUrl = '';
   setPhase('idle', 'Disconnected');
   appendMessage({ role: 'system', text: 'Disconnected' });
+}
+
+// ponytail: Bug 2 — visible connection indicator. Dot-only — state
+// conveyed by colour (green/amber/red) + the title-attribute tooltip.
+// Driven by WS lifecycle events from background.ts.
+function setConnPill(stateName, tooltipLabel) {
+  if (!statusPill) return;
+  statusPill.classList.remove('connected', 'reconnecting', 'error');
+  if (stateName) statusPill.classList.add(stateName);
+  // The visible dot only changes colour. The label is in the tooltip
+  // (hover / screen-reader / aria-live).
+  statusPill.title = `Connection: ${tooltipLabel}`;
 }
 
 async function startTask() {
@@ -919,6 +1213,46 @@ function appendMessage({ role, text, inlineLogs, finalAnswer }) {
   return msg;
 }
 
+// ponytail: structured failure bubble for policy violations. Title +
+// body + footer in a single red card so the user sees both the human-
+// readable framing (set by renderPolicyFailureCard) and the actual
+// harness summary that explains the specific incident. The footer is
+// muted/grey so the eye lands on the body first.
+function appendFailureBubble({ title, body, footer }) {
+  const empty = messagesEl.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const msg = document.createElement('div');
+  msg.className = 'message error';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble failure-bubble';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'failure-title';
+  titleEl.textContent = title;
+  bubble.appendChild(titleEl);
+
+  if (body) {
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'failure-body';
+    bodyEl.innerHTML = renderMarkdown(body);
+    bubble.appendChild(bodyEl);
+  }
+
+  if (footer) {
+    const footerEl = document.createElement('div');
+    footerEl.className = 'failure-footer';
+    footerEl.textContent = footer;
+    bubble.appendChild(footerEl);
+  }
+
+  msg.appendChild(bubble);
+  messagesEl.appendChild(msg);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return msg;
+}
+
 // ── Plan preview card ─────────────────────────────────────────────────────
 function appendPlanCard({ title, sites, steps }) {
   const empty = messagesEl.querySelector('.empty-state');
@@ -1065,9 +1399,30 @@ function appendStepWithDetails({ icon, text, details, pageUrl, pageTitle, action
 }
 
 // ── Approval request card ─────────────────────────────────────────────────
+// Actions the client should never paint as an approval card. The server
+// is the source of truth, but this is defense-in-depth in case a future
+// regression sends one of these.
+const NON_APPROVABLE_ACTIONS = new Set([
+  'task_complete', 'cannot_complete', 'ask_human',
+  'write_scratchpad', 'append_scratchpad', 'read_scratchpad',
+  'recall_memory',
+]);
+
 function appendApprovalCard({ id, reason, action }) {
   const empty = messagesEl.querySelector('.empty-state');
   if (empty) empty.remove();
+
+  // Defense-in-depth: never render an approval card for a terminal,
+  // internal, or question action. The server filters these too; if it
+  // ever stops doing so, the user shouldn't see a button to "Approve
+  // cannot_complete".
+  if (NON_APPROVABLE_ACTIONS.has(action)) {
+    console.warn('[brotto] suppressed approval card for non-approvable action:', action);
+    // Still need to ACK so the server's queue doesn't hang. Send deny
+    // so the harness aborts cleanly if it was awaiting this reply.
+    if (id) void sendMessage({ type: 'submit_approval', id, approved: false });
+    return;
+  }
 
   const card = document.createElement('div');
   card.className = 'approval-card';
@@ -1111,6 +1466,32 @@ function appendApprovalCard({ id, reason, action }) {
     appendMessage({ role: 'assistant', text: 'Action approved.' });
     card.remove();
     void sendMessage({ type: 'submit_approval', id, approved: true });
+    // ponytail: 5s post-approval revoke window. Show a small inline
+    // affordance below the action bubble. If the user changes their
+    // mind, the extension sends `revoke` to the server, which clears
+    // approved_domains / seen_first_time so the next step re-prompts.
+    const revoke = document.createElement('button');
+    revoke.className = 'btn btn-secondary btn-sm revoke-btn';
+    revoke.textContent = 'Revoke (5s)';
+    let remaining = 5;
+    const tick = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(tick);
+        revoke.remove();
+      } else {
+        revoke.textContent = `Revoke (${remaining}s)`;
+      }
+    }, 1000);
+    revoke.addEventListener('click', () => {
+      clearInterval(tick);
+      revoke.remove();
+      void sendMessage({ type: 'send_to_server', payload: { type: 'revoke' } });
+      appendMessage({ role: 'assistant', text: 'Approval revoked — next step will re-prompt.' });
+    });
+    // Insert after the last assistant message bubble.
+    const lastBubble = messagesEl.querySelector('.message.assistant:last-child') || messagesEl;
+    lastBubble.appendChild(revoke);
   });
   actions.appendChild(approveBtn);
 
@@ -1306,11 +1687,101 @@ function finishAssistantMessage({ icon, title, meta }) {
 }
 
 // ── Message listener (all event types from background.ts) ──────────────────
+
+// ponytail: enterprise-grade failure rendering for policy violations.
+// The cyber-team tone: no first-person, no apology, references the audit
+// trail, gives a contact path, never blames the user. Returns null for
+// non-policy failures so the existing generic render path is unchanged.
+function renderPolicyFailureCard(message) {
+  const reason = message.failure_reason;
+  const summaryText = message.summary || '';
+  if (reason === 'policy_blocked') {
+    const blockedDomain = summaryText.match(/Blocked by policy:\s*(\S+)/)?.[1] || '(unknown)';
+    return {
+      title: "Action blocked by your organisation's security policy",
+      body:
+        "This task attempted to interact with a domain on your organisation's restricted list. "
+        + "The action was stopped to protect company data. "
+        + "If you need access for legitimate work, contact your IT administrator.",
+      footer: 'Blocked domain: ' + blockedDomain,
+    };
+  }
+  if (reason === 'user_denied') {
+    return {
+      title: 'Task stopped — approval not granted',
+      body:
+        'You declined an approval prompt during this task. The agent has stopped rather than continuing '
+        + 'with an action you did not authorise. Start a new task to retry, or contact your administrator '
+        + 'if you need help.',
+    };
+  }
+  if (reason === 'policy_preflight') {
+    // ponypnail: Agent declined upfront after seeing the org blacklist in
+    // its preamble. The harness's `summary` is the agent's own reason
+    // ("The organisation's security policy explicitly blacklists
+    // mail.google.com. Navigating there would violate your organisation's
+    // policy."). Show that as the body — it's the actual explanation, not
+    // a paraphrase. Earlier code suppressed it on the grounds that the
+    // preceding assistant bubble already stated it; in practice the
+    // assistant card is a single line ("Checking the security policy
+    // before navigating to Gmail.") and users miss the link.
+    //
+    // Extract the specific blocked domain if it's named in the summary,
+    // so the footer surfaces it without the user having to read the body.
+    const blockedDomain = summaryText.match(/blacklists?\s+([^\s.,;]+)/i)?.[1] || '';
+    return {
+      title: "Task not permitted by your organisation's security policy",
+      body: summaryText ||
+        "Brotto's policy preamble listed this task as out of scope for secure mode. "
+        + "The agent declined the request before navigating anywhere. "
+        + "Contact your IT administrator if you believe this is in error.",
+      footer: blockedDomain ? `Blocked domain: ${blockedDomain}` : '',
+    };
+  }
+  if (reason === 'CONNECTION_LOST') {
+    // ponytail: WS died mid-task. The background emitted this event so
+    // the user sees a structured explanation (not just "Task failed
+    // (CONNECTION_LOST)") and understands the task state — the agent
+    // can't continue, but their browser is fine and they can retry once
+    // the server is back.
+    return {
+      title: 'Connection to server lost',
+      body: "The agent lost contact with the Brotto server mid-task and can't continue from here. "
+        + "Your browser is unaffected — start a new task once the server is back.",
+    };
+  }
+  return null;
+}
+
 chrome.runtime.onMessage.addListener((message) => {
   switch (message.type) {
 
     case 'session_started':
       state.sessionId = message.sessionId || state.sessionId;
+      break;
+
+    // ponytail: Bug 3 — WS closed. The background emits a separate
+    // `task_failed` event with reason CONNECTION_LOST when a task was
+    // in-flight, so the timer stops and the failure bubble renders via
+    // the existing task_failed handler. Here we just update the
+    // connection pill; nothing else needs to happen on this event.
+    case 'disconnected':
+      setConnPill('reconnecting', 'Reconnecting…');
+      break;
+
+    // ponytail: Bug 4 — backoff state machine surfaces each attempt to
+    // the user via the amber pill so the sidepanel feels alive.
+    case 'reconnect_attempt':
+      setConnPill('reconnecting', `Reconnecting… (attempt ${message.attempt ?? '?'})`);
+      break;
+
+    // ponytail: Bug 4 — backoff exhausted or user clicked Disconnect.
+    // If a task was in flight, the CONNECTION_LOST bubble already
+    // explained the situation; the pill flipping to 'Disconnected'
+    // is enough. The earlier error message here duplicated that
+    // explanation and added noise to the chat.
+    case 'reconnect_giveup':
+      setConnPill('error', 'Disconnected');
       break;
 
     case 'canonical_status': {
@@ -1491,16 +1962,34 @@ chrome.runtime.onMessage.addListener((message) => {
       // after the task has failed / been cancelled.
       clearLoginPrompt();
       stopTimer();
-      // The orchestrator sends summary (the agent's `cannot_complete`
-      // reason) and failure_reason (same value). Show the human message
-      // directly — no "Error:" prefix, the red bubble already conveys
-      // the failure.
-      const failMsg = message.failure_reason || message.summary || 'Task failed';
-      setPhase('error', failMsg);
-      appendMessage({
-        role: 'error',
-        text: failMsg,
-      });
+      // ponytail: structured failure bubble (title + body + footer) for
+      // policy failures; falls back to the harness's `summary` for everything
+      // else so the user always sees WHY the task failed, not just the
+      // code. The earlier version suppressed the bubble entirely for
+      // `policy_preflight` on the theory that the preceding assistant
+      // card already explained it — in practice that card is one line
+      // ("Checking the security policy before navigating to Gmail.") and
+      // the link to the actual reason was easy to miss.
+      const policyMsg = renderPolicyFailureCard(message);
+      if (policyMsg) {
+        setPhase('error', policyMsg.title);
+        // ponytail: title is set via setPhase above; render a structured
+        // bubble with the body and a separate footer so the blocked
+        // domain + reference ID don't get lost in the prose.
+        appendFailureBubble({
+          title: policyMsg.title,
+          body: policyMsg.body,
+          footer: policyMsg.footer,
+        });
+      } else {
+        // Non-policy failure: surface the harness's `summary` verbatim so
+        // the user sees the actual reason (e.g. network error, model
+        // refusal, missing login). Falls back to the failure_reason code
+        // only when the harness didn't include a summary.
+        const failMsg = message.summary || message.failure_reason || 'Task failed';
+        setPhase('error', message.failure_reason ? `Task failed (${message.failure_reason})` : 'Task failed');
+        appendMessage({ role: 'error', text: failMsg });
+      }
       break;
 
     case 'clarify_request': {
@@ -1620,6 +2109,25 @@ goalEl.focus();
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.plannerUrl = url;
   } catch {
-    // Server not reachable — leave state.plannerUrl unset so the UI shows idle.
+    // ponytail: Bug 9 — server unreachable on open. Surface a one-line
+    // toast so the user knows their UI isn't actually wired to a live
+    // server. Auto-dismiss after 5s. Don't mark plannerUrl so the
+    // connection pill stays in the default "Idle" state.
+    state.serverReachable = false;
+    setConnPill(null, 'Server unreachable');
+    appendMessage({ role: 'error',
+      text: '⚠ Server unreachable — settings still work locally. Will auto-reconnect when it returns.',
+    });
+    // Don't keep the toast around forever; remove the most-recent error
+    // message after 5s so the chat stays clean for the next prompt.
+    setTimeout(() => {
+      const messages = messagesEl.querySelectorAll('.message-error');
+      if (messages.length) {
+        const oldest = messages[0];
+        if (oldest.textContent && oldest.textContent.includes('Server unreachable')) {
+          oldest.remove();
+        }
+      }
+    }, 5000);
   }
 })();

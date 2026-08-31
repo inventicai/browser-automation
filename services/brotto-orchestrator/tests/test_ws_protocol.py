@@ -124,7 +124,7 @@ def test_ping_returns_pong(agent_disabled):
         with client.websocket_connect("/ws/ext/proto-ping") as ws:
             ws.send_text(json.dumps({"type": "task_start", "task": "noop"}))
             ws.send_text(json.dumps({"type": "ping"}))
-            pong = ws.receive_json()
+            pong = _drain_until(ws, "pong")
             assert pong == {"type": "pong"}
 
 
@@ -156,7 +156,7 @@ def test_duplicate_observation_seq_is_dropped_at_boundary(agent_disabled):
 
             # Confirm the WS is still alive after the duplicates.
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 def test_observation_seq_gap_is_warned_but_accepted(agent_disabled):
@@ -179,7 +179,7 @@ def test_observation_seq_gap_is_warned_but_accepted(agent_disabled):
                 "axTargets": [],
             }))
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 def test_observation_without_seq_is_legacy_compatible(agent_disabled):
@@ -194,7 +194,7 @@ def test_observation_without_seq_is_legacy_compatible(agent_disabled):
                 "axTargets": [],
             }))
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ def test_evaluate_result_round_trips(agent_disabled):
             # observe the next response cleanly.
             ws.send_text(json.dumps({"type": "evaluate_result", "value": "hello"}))
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 def test_human_reply_accepted(agent_disabled):
@@ -222,7 +222,7 @@ def test_human_reply_accepted(agent_disabled):
             ws.send_text(json.dumps({"type": "task_start", "task": "noop"}))
             ws.send_text(json.dumps({"type": "human_reply", "content": "yes"}))
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 def test_unknown_message_type_is_logged_not_fatal(agent_disabled):
@@ -232,7 +232,7 @@ def test_unknown_message_type_is_logged_not_fatal(agent_disabled):
             ws.send_text(json.dumps({"type": "task_start", "task": "noop"}))
             ws.send_text(json.dumps({"type": "totally_made_up_type"}))
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 def test_malformed_json_does_not_crash_the_session(agent_disabled):
@@ -242,7 +242,7 @@ def test_malformed_json_does_not_crash_the_session(agent_disabled):
             ws.send_text(json.dumps({"type": "task_start", "task": "noop"}))
             ws.send_text("not even json {{{")
             ws.send_text(json.dumps({"type": "ping"}))
-            assert ws.receive_json() == {"type": "pong"}
+            assert _drain_until(ws, "pong") == {"type": "pong"}
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ def test_separate_sessions_have_independent_trackers(agent_disabled):
                 "url": "http://a.com", "title": "A", "axTargets": [],
             }))
             wsA.send_text(json.dumps({"type": "ping"}))
-            assert wsA.receive_json() == {"type": "pong"}
+            assert _drain_until(wsA, "pong") == {"type": "pong"}
 
         with client.websocket_connect("/ws/ext/session-B") as wsB:
             wsB.send_text(json.dumps({"type": "task_start", "task": "noop"}))
@@ -270,4 +270,4 @@ def test_separate_sessions_have_independent_trackers(agent_disabled):
                 "url": "http://b.com", "title": "B", "axTargets": [],
             }))
             wsB.send_text(json.dumps({"type": "ping"}))
-            assert wsB.receive_json() == {"type": "pong"}
+            assert _drain_until(wsB, "pong") == {"type": "pong"}
